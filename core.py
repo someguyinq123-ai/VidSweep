@@ -40,6 +40,44 @@ VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
 DEFAULT_FFMPEG = r'C:\ffmpeg\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe'
 DEFAULT_FFPROBE = r'C:\ffmpeg\ffmpeg-8.1.1-essentials_build\bin\ffprobe.exe'
 
+# user-saved override (set by the GUI when the user browses for ffmpeg.exe)
+_ffmpeg_override = None
+
+
+def set_ffmpeg_override(ffmpeg_exe):
+    """Point the app at a specific ffmpeg.exe; ffprobe is expected beside it."""
+    global _ffmpeg_override
+    _ffmpeg_override = ffmpeg_exe
+
+
+def find_ffmpeg():
+    # 1) explicit override for this session
+    if _ffmpeg_override and os.path.isfile(_ffmpeg_override):
+        return _ffmpeg_override
+    # 2) path saved by a previous session
+    saved = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg_path.txt')
+    if os.path.isfile(saved):
+        try:
+            with open(saved) as fh:
+                p = fh.read().strip()
+            if p and os.path.isfile(p):
+                return p
+        except OSError:
+            pass
+    # 3) known default + common install locations
+    import glob
+    candidates = [DEFAULT_FFMPEG]
+    for base in (r'C:\ffmpeg', r'C:\Program Files\ffmpeg', r'C:\Program Files (x86)\ffmpeg',
+                 os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'WinGet', 'Packages')):
+        if base and os.path.isdir(base):
+            candidates += glob.glob(os.path.join(base, '**', 'bin', 'ffmpeg.exe'), recursive=True)
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    # 4) whatever is on PATH
+    from shutil import which
+    return which('ffmpeg')
+
 SAMPLE_TIMES = [0.10, 0.35, 0.60, 0.85]   # fractions of duration to sample
 HAMMING_THRESHOLD = 8                      # per-frame max bit difference
 
@@ -56,6 +94,12 @@ def find_ffmpeg():
 
 
 def find_ffprobe():
+    # prefer sitting beside whatever ffmpeg was chosen
+    ff = find_ffmpeg()
+    if ff:
+        cand = os.path.join(os.path.dirname(ff), 'ffprobe.exe')
+        if os.path.isfile(cand):
+            return cand
     for p in (DEFAULT_FFPROBE, ):
         if os.path.isfile(p):
             return p

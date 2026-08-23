@@ -229,6 +229,35 @@ class App(tk.Tk):
         ttk.Button(opts, text='What do these levels mean?',
                    command=self.show_sensitivity_help).pack(side='left', padx=6)
 
+        ffrow = ttk.Frame(f); ffrow.pack(fill='x', **pad)
+        self._update_ffmpeg_status(f)
+        ttk.Button(ffrow, text='Locate ffmpeg…', command=self.locate_ffmpeg).pack(side='left')
+
+    def _update_ffmpeg_status(self, parent):
+        ff = core.find_ffmpeg()
+        fp = core.find_ffprobe()
+        if ff and fp:
+            self.ffmpeg_status = ttk.Label(
+                parent, text=f'✓ ffmpeg found: {ff}', foreground='green')
+        else:
+            self.ffmpeg_status = ttk.Label(
+                parent, text='✗ ffmpeg NOT found — scanning will fail. Click "Locate ffmpeg…".',
+                foreground='red')
+        self.ffmpeg_status.pack(anchor='w', padx=10, pady=2)
+
+    def locate_ffmpeg(self):
+        d = os.path.dirname(core.find_ffmpeg() or '') or 'C:\\'
+        p = filedialog.askopenfilename(
+            title='Select ffmpeg.exe', initialdir=d,
+            filetypes=[('ffmpeg.exe', 'ffmpeg.exe'), ('All files', '*.*')])
+        if not p:
+            return
+        core.set_ffmpeg_override(p)
+        with open(os.path.join(APP_DIR, 'ffmpeg_path.txt'), 'w') as fh:
+            fh.write(p)
+        self.ffmpeg_status.config(
+            text=f'✓ ffmpeg set: {p}', foreground='green')
+
         run = ttk.Frame(f); run.pack(fill='x', **pad)
         self.scan_btn = ttk.Button(run, text='Start scan', command=self.start_scan)
         self.scan_btn.pack(side='left')
