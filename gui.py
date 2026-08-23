@@ -209,9 +209,11 @@ class App(tk.Tk):
         pad = {'padx': 10, 'pady': 6}
 
         row = ttk.Frame(f); row.pack(fill='x', **pad)
-        ttk.Label(row, text='Folders to scan:').pack(anchor='w')
-        self.folder_list = tk.Listbox(row, height=5)
+        ttk.Label(row, text='Folders to scan: (Ctrl/Shift-click to select multiple; Delete key removes)').pack(anchor='w')
+        self.folder_list = tk.Listbox(row, height=5, selectmode='extended')
         self.folder_list.pack(fill='x', side='top')
+        self.folder_list.bind('<Delete>', lambda e: self.remove_folder())
+        self.folder_list.bind('<BackSpace>', lambda e: self.remove_folder())
         btns = ttk.Frame(row); btns.pack(fill='x', pady=4)
         ttk.Button(btns, text='Add folder…', command=self.add_folder).pack(side='left')
         ttk.Button(btns, text='Remove selected', command=self.remove_folder).pack(side='left', padx=4)
@@ -297,9 +299,11 @@ class App(tk.Tk):
             self._save_settings()
 
     def remove_folder(self):
-        sel = self.folder_list.curselection()
+        # delete highest index first so lower indices stay valid during removal
+        sel = sorted(self.folder_list.curselection(), reverse=True)
         if sel:
-            self.folder_list.delete(sel[0])
+            for i in sel:
+                self.folder_list.delete(i)
             self._save_settings()
 
     def _save_settings(self):
