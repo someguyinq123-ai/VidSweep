@@ -1,0 +1,10 @@
+# user data — never publish
+library.db
+library.db-wal
+library.db-shm
+privacy.json
+settings.json
+crash.log
+quarantine/
+__pycache__/
+*.pyc

@@ -1,0 +1,527 @@
+"""
+Video Organizer — core engine.
+Scans folders, fingerprints videos, groups exact and perceptual duplicates.
+
+Pipeline:
+  1. Scan: walk folder tree, collect video files (extension + magic check optional)
+  2. Exact hash: SHA-256 of file content (streamed). Byte-identical files group instantly.
+  3. Perceptual hash (pHash): ffmpeg extracts frames at several timestamps; each frame
+     gets a 64-bit DCT perceptual hash. Two videos are "visually same" if their
+     frame-hash sets match closely. This catches re-encodes, container changes,
+     resolution changes.
+  4. Grouping: union-find merges files into duplicate groups.
+
+Everything is cached in SQLite so re-scans only fingerprint new/changed files.
+"""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    import imagehash
+    from PIL import Image
+    HAVE_IMAGEHASH = True
+except ImportError:
+    HAVE_IMAGEHASH = False
+
+VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
+              '.m4v', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.vob',
+              '.3gp', '.ogv', '.rm', '.rmvb', '.asf', '.divx', '.f4v'}
+
+DEFAULT_FFMPEG = r'C:\ffmpeg\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe'
+DEFAULT_FFPROBE = r'C:\ffmpeg\ffmpeg-8.1.1-essentials_build\bin\ffprobe.exe'
+
+SAMPLE_TIMES = [0.10, 0.35, 0.60, 0.85]   # fractions of duration to sample
+HAMMING_THRESHOLD = 8                      # per-frame max bit difference
+
+# On Windows, prevent ffmpeg/ffprobe console windows from popping up
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+
+
+def find_ffmpeg():
+    for p in (DEFAULT_FFMPEG, ):
+        if os.path.isfile(p):
+            return p
+    from shutil import which
+    return which('ffmpeg')
+
+
+def find_ffprobe():
+    for p in (DEFAULT_FFPROBE, ):
+        if os.path.isfile(p):
+            return p
+    from shutil import which
+    return which('ffprobe')
+
+
+class Cancelled(Exception):
+    pass
+
+
+class VideoOrganizer:
+    def __init__(self, db_path=None):
+        if db_path is None:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        else:
+            app_dir = os.path.dirname(db_path)
+        if not db_path:
+            db_path = os.path.join(app_dir, 'library.db')
+        os.makedirs(app_dir, exist_ok=True)
+        self.db_path = db_path
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
+        self._db_lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._pause = threading.Event()
+        self.db.execute("""CREATE TABLE IF NOT EXISTS files(
+            path TEXT PRIMARY KEY,
+            size INTEGER,
+            mtime REAL,
+            sha256 TEXT,
+            phash TEXT,
+            duration REAL,
+            width INTEGER,
+            height INTEGER,
+            fps REAL,
+            vcodec TEXT,
+            thumbnail BLOB)""")
+        self.db.commit()
+
+    # ------------------------------------------------------------------ util
+    def cancel(self):
+        self._cancel.set()
+
+    def pause(self):
+        self._pause.set()
+
+    def resume(self):
+        self._pause.clear()
+
+    def _wait_if_paused(self):
+        """Blocks while paused; raises Cancelled if cancel pressed during pause."""
+        while self._pause.is_set() and not self._cancel.is_set():
+            time.sleep(0.2)
+        self._check_cancel()
+
+    def _check_cancel(self):
+        if self._cancel.is_set():
+            raise Cancelled()
+
+    @staticmethod
+    def _iter_videos(roots, recursive=True):
+        seen = set()
+        for root in roots:
+            root = os.path.abspath(root)
+            if not os.path.isdir(root):
+                continue
+            if recursive:
+                for dirpath, dirnames, filenames in os.walk(root):
+                    dirnames[:] = [d for d in dirnames if d != '$RECYCLE.BIN']
+                    for fn in filenames:
+                        ext = os.path.splitext(fn)[1].lower()
+                        if ext in VIDEO_EXTS:
+                            p = os.path.join(dirpath, fn)
+                            rp = os.path.normcase(p)
+                            if rp not in seen:
+                                seen.add(rp)
+                                yield p
+            else:
+                for fn in os.listdir(root):
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext in VIDEO_EXTS:
+                        yield os.path.join(root, fn)
+
+    def _sha256(self, path, size):
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            while True:
+                chunk = f.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _ffprobe_info(self, path):
+        ffprobe = find_ffprobe()
+        try:
+            out = subprocess.run(
+                [ffprobe, '-v', 'error', '-print_format', 'json',
+                 '-show_entries',
+                 'format=duration:stream=codec_type,width,height,r_frame_rate,codec_name',
+                 path],
+                capture_output=True, text=True, timeout=30,
+                creationflags=_NO_WINDOW)
+            info = json.loads(out.stdout or '{}')
+        except Exception:
+            return {}
+        dur = None
+        fmt = info.get('format', {})
+        if fmt.get('duration'):
+            dur = float(fmt['duration'])
+        streams = info.get('streams') or []
+        vs = next((s for s in streams if s.get('codec_type') == 'video'), {})
+        fps = None
+        if vs.get('r_frame_rate'):
+            num, _, den = str(vs['r_frame_rate']).partition('/')
+            try:
+                fps = float(num) / float(den or 1)
+            except ZeroDivisionError:
+                fps = None
+        return {'duration': dur,
+                'width': vs.get('width'),
+                'height': vs.get('height'),
+                'fps': fps,
+                'vcodec': vs.get('codec_name')}
+
+    # ------------------------------------------------------------- thumbnails
+    def _extract_frames(self, path, duration, tmpdir):
+        """Extract sample frames as JPEG bytes list."""
+        ffmpeg = find_ffmpeg()
+        frames = []
+        times = []
+        for frac in SAMPLE_TIMES:
+            t = duration * frac
+            times.append(t)
+        procs = []
+        import uuid
+        run_dir = os.path.join(tmpdir, uuid.uuid4().hex)
+        os.makedirs(run_dir, exist_ok=True)
+        try:
+            for i, t in enumerate(times):
+                out = os.path.join(run_dir, f'f{i}.jpg')
+                cmd = [ffmpeg, '-y', '-v', 'error', '-ss', f'{t:.3f}', '-i', path,
+                       '-frames:v', '1', '-vf', 'scale=256:-2', out]
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=60,
+                                   creationflags=_NO_WINDOW)
+                    with open(out, 'rb') as f:
+                        data = f.read()
+                    if len(data) > 100:
+                        frames.append(data)
+                except Exception:
+                    pass
+        finally:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        return frames
+
+    def _make_thumb_and_phashes(self, path, duration):
+        """Returns (thumbnail_jpeg_bytes, [phash_str, ...])."""
+        tmpdir = os.path.join(os.environ.get('TEMP', '/tmp'), 'vidorg_cache')
+        os.makedirs(tmpdir, exist_ok=True)
+        frames = self._extract_frames(path, duration or 0, tmpdir)
+        if not frames:
+            return None, []
+        thumb = frames[0]
+        hashes = []
+        if HAVE_IMAGEHASH:
+            for data in frames:
+                try:
+                    import io
+                    img = Image.open(io.BytesIO(data))
+                    ph = imagehash.phash(img)
+                    hashes.append(str(ph))
+                except Exception:
+                    pass
+        return thumb, hashes
+
+    # ------------------------------------------------------------------- scan
+    def scan(self, roots, recursive=True, progress=None):
+        """
+        Full pipeline over given roots.
+        progress callback: progress(phase:str, done:int, total:int, current_path:str)
+        Returns dict summary.
+        """
+        self._cancel.clear()
+        t0 = time.time()
+
+        # Phase 0: enumerate
+        paths = list(self._iter_videos(roots, recursive))
+        total = len(paths)
+        if progress:
+            progress('scan', 0, total, '')
+        stats = {'scanned': 0, 'hashed_exact': 0, 'hashed_perceptual': 0,
+                 'skipped_cached': 0, 'errors': 0}
+
+        cur = self.db.cursor()
+        known = {os.path.normcase(r[0]): r for r in cur.execute(
+            'SELECT path,size,mtime,sha256 FROM files')}
+
+        to_process = []
+        for p in paths:
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            k = os.path.normcase(p)
+            rec = known.get(k)
+            # skip only if unchanged AND fully fingerprinted (has sha)
+            if rec and rec[3] and rec[1] == st.st_size and abs(rec[2] - st.st_mtime) < 1:
+                stats['skipped_cached'] += 1
+                continue
+            to_process.append((p, st.st_size, st.st_mtime))
+
+        work_total = len(to_process)
+        done = 0
+        errors = []
+
+        def process_one(item):
+            p, size, mtime = item
+            self._check_cancel()
+            sha = digests.get(p)
+            duration = width = height = fps = vcodec = None
+            thumb = None
+            hashes = []
+            try:
+                info = self._ffprobe_info(p)
+                duration = info.get('duration')
+                width = info.get('width')
+                height = info.get('height')
+                fps = info.get('fps')
+                vcodec = info.get('vcodec')
+                if duration and HAVE_IMAGEHASH:
+                    thumb, hashes = self._make_thumb_and_phashes(p, duration)
+            except Exception as e:
+                errors.append((p, f'ffprobe/frames: {e}'))
+            cur2 = self.db.cursor()
+            with self._db_lock:
+                cur2.execute(
+                    'INSERT OR REPLACE INTO files(path,size,mtime,sha256,phash,duration,width,height,fps,vcodec,thumbnail)'
+                    ' VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                    (p, size, mtime, sha,
+                     json.dumps(hashes) if hashes else None,
+                     duration, width, height, fps, vcodec, thumb))
+                self.db.commit()
+            return p
+
+        lock = threading.Lock()
+
+        def guarded_progress(kind):
+            nonlocal done
+            with lock:
+                done += 1
+                if progress:
+                    progress(kind, done, work_total, '')
+
+        # Stage A: exact hashing (parallel, I/O bound); keep digests for Stage B
+        if progress:
+            progress('hashing', 0, work_total, '')
+        digests = {}
+        stageA_done = 0
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {ex.submit(self._sha256, p, s): (p, s, m)
+                       for p, s, m in to_process}
+            for fut in as_completed(futures):
+                self._wait_if_paused()
+                self._check_cancel()
+                p, s, m = futures[fut]
+                try:
+                    digest = fut.result()
+                    cur.execute(
+                        'UPDATE files SET sha256=? WHERE path=?', (digest, p))
+                    digests[p] = digest
+                except Cancelled:
+                    for f2 in futures:
+                        f2.cancel()
+                    raise
+                except Exception as e:
+                    errors.append((p, f'hash: {e}'))
+                stageA_done += 1
+                if progress:
+                    progress('hashing', stageA_done, work_total, os.path.basename(p))
+        self.db.commit()
+
+        # Stage B: metadata + perceptual hashes + thumbnails (parallel decode)
+        if progress:
+            progress('perceptual', 0, work_total, '')
+        stageB_done = 0
+        with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4) // 2)) as ex:
+            futures = {ex.submit(process_one, item): item for item in to_process}
+            for fut in as_completed(futures):
+                self._wait_if_paused()
+                self._check_cancel()
+                try:
+                    fut.result()
+                except Cancelled:
+                    for f2 in futures:
+                        f2.cancel()
+                    raise
+                except Exception as e:
+                    errors.append((futures[fut][0], str(e)))
+                stageB_done += 1
+                if progress:
+                    progress('perceptual', stageB_done, work_total,
+                             os.path.basename(futures[fut][0]))
+        self.db.commit()
+
+        elapsed = time.time() - t0
+        stats['scanned'] = total
+        stats['processed'] = len(to_process)
+        stats['errors'] = len(errors)
+        stats['error_details'] = errors[:10]
+        stats['elapsed'] = round(elapsed, 1)
+        return stats
+
+    # ---------------------------------------------------------------- grouping
+    def _load_records(self):
+        rows = self.db.execute(
+            'SELECT path,size,sha256,phash,duration,width,height,vcodec '
+            'FROM files WHERE sha256 IS NOT NULL').fetchall()
+        recs = []
+        for path, size, sha, phash, dur, w, h, vc in rows:
+            hashes = json.loads(phash) if phash else []
+            recs.append({'path': path, 'size': size, 'sha': sha,
+                         'hashes': hashes, 'duration': dur,
+                         'width': w, 'height': h, 'vcodec': vc})
+        return recs
+
+    def find_duplicates(self, threshold=HAMMING_THRESHOLD, min_duration_overlap=0.90,
+                        use_perceptual=True, progress=None):
+        """
+        Build duplicate groups.
+        Returns list of groups: each is list of record dicts, sorted by quality score.
+        """
+        recs = self._load_records()
+        n = len(recs)
+        parent = list(range(n))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # --- exact duplicates via sha map
+        by_sha = {}
+        for i, r in enumerate(recs):
+            by_sha.setdefault(r['sha'], []).append(i)
+        for idxs in by_sha.values():
+            for j in idxs[1:]:
+                union(idxs[0], j)
+
+        # --- perceptual matching
+        if use_perceptual and HAVE_IMAGEHASH:
+            # index by each frame hash bucket: compare within buckets only
+            from collections import defaultdict
+            bucket = defaultdict(list)
+            for i, r in enumerate(recs):
+                for h in r['hashes']:
+                    ih = imagehash.hex_to_hash(h)
+                    bucket[h].append(i)
+                    # also coarse bucket: first 8 bits variants are expensive;
+                    # simple approach below uses pairwise within same-duration bands
+                    r.setdefault('_ih', []).append(ih)
+            # Pairwise comparison restricted to similar durations to keep O manageable.
+            # Sort by duration and only compare neighbors within overlap window.
+            order = sorted(range(n), key=lambda i: (recs[i]['duration'] or 0))
+            compared = set()
+            pairs_checked = 0
+            for ai in range(len(order)):
+                i = order[ai]
+                di = recs[i]['duration']
+                if not di:
+                    continue
+                for bi in range(ai + 1, len(order)):
+                    j = order[bi]
+                    dj = recs[j]['duration']
+                    if not dj:
+                        continue
+                    lo, hi = min(di, dj), max(di, dj)
+                    if hi == 0:
+                        continue
+                    if lo / hi < min_duration_overlap:
+                        break  # sorted, so all later ones are even further apart
+                    pairs_checked += 1
+                    key = (min(i, j), max(i, j))
+                    if key in compared or find(i) == find(j):
+                        continue
+                    compared.add(key)
+                    sim = self._similarity(recs[i], recs[j], threshold)
+                    if sim:
+                        union(i, j)
+
+        # --- collect groups
+        groups = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(recs[i])
+        dupes = [g for g in groups.values() if len(g) > 1]
+        for g in dupes:
+            g.sort(key=self._quality_key, reverse=True)
+        dupes.sort(key=lambda g: -(sum(r['size'] for r in g)))
+        return dupes
+
+    @staticmethod
+    def _similarity(a, b, threshold):
+        ha, hb = a.get('_ih'), b.get('_ih')
+        if not ha or not hb:
+            return False
+        # match every frame of the shorter list against best of other
+        shorter = ha if len(ha) <= len(hb) else hb
+        longer = hb if shorter is ha else ha
+        matched = 0
+        for x in shorter:
+            best = min((x - y) for y in longer)
+            if best <= threshold:
+                matched += 1
+        return matched >= max(2, int(0.75 * len(shorter)))
+
+    @staticmethod
+    def _quality_key(r):
+        """Higher = better copy. Prefer resolution, then bitrate proxy, then codec."""
+        res = (r.get('height') or 0) * (r.get('width') or 0)
+        bitrate_proxy = (r['size'] / r['duration']) if r.get('duration') else 0
+        good_codec = 1 if (r.get('vcodec') or '') in ('h264', 'hevc', 'av1', 'vp9') else 0
+        return (res, bitrate_proxy, good_codec)
+
+    # ------------------------------------------------------------ thumbnails
+    def get_thumbnail(self, path):
+        row = self.db.execute('SELECT thumbnail FROM files WHERE path=?', (path,)).fetchone()
+        return row[0] if row else None
+
+    # ---------------------------------------------------------------- organize
+    def suggest_folders(self, paths):
+        """Name-based category suggestion: strip noise tokens, cluster on shared prefix words."""
+        from collections import Counter
+        noise = {'1080p', '720p', '480p', '2160p', '4k', 'x264', 'x265', 'h264',
+                 'hevc', 'aac', 'bluray', 'brrip', 'dvdrip', 'webrip', 'web-dl',
+                 'webdl', 'hdrip', 'hd', 'cam', 'xvid', '10bit', '8bit', 'hdr',
+                 'yify', 'rarbg', 'ettv', 'mp4', 'mkv', 'avi'}
+        word_counts = Counter()
+        tokenized = {}
+        for p in paths:
+            name = os.path.splitext(os.path.basename(p))[0]
+            tokens = re.findall(r'[a-z0-9]+', name.lower())
+            clean = [t for t in tokens if t not in noise and len(t) > 1]
+            tokenized[p] = clean
+            for t in clean[:3]:   # leading words matter most
+                word_counts[t] += 1
+        suggestions = []
+        for p, toks in tokenized.items():
+            cat = None
+            for t in toks[:3]:
+                if word_counts[t] >= 5:
+                    cat = t.title()
+                    break
+            if cat is None:
+                cat = 'Misc'
+            suggestions.append((p, cat))
+        return suggestions
+
+    def close(self):
+        self.db.close()
+
+
+if __name__ == '__main__':
+    print('Core module OK. Import this from the GUI.')

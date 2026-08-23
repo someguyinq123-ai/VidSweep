@@ -1,0 +1,52 @@
+HOW PERCEPTUAL MATCH SENSITIVITY WORKS
+========================================
+
+The app compares 4 sampled frames from each video (at 10%, 35%, 60% and 85% of
+the runtime). Each frame is reduced to a 64-bit "fingerprint" of its visual
+structure. Two frames match if their fingerprints differ by at most N bits —
+and N is exactly the number the sensitivity slider sets.
+
+WHAT THE SLIDER CHANGES
+-----------------------
+* The maximum allowed bit difference (N) between two frames' fingerprints.
+  4 = nearly pixel-identical frames only. 14 = frames can look quite
+  different and still count as a match.
+* Nothing else about the matching rules.
+
+WHAT STAYS THE SAME AT EVERY LEVEL
+----------------------------------
+* At least 3 of a video's 4 frames must match (75%) — one noisy frame
+  (fade-in, black frame, scene flash) never breaks a true match.
+* Duration check: videos must also be within 10% of the same length.
+* Exact duplicates: byte-identical files are always grouped, regardless
+  of this setting.
+
+LEVEL-BY-LEVEL GUIDE
+--------------------
+ 4  Very strict. Only catches re-encodes that are visually almost identical
+    to the original (high-bitrate copies, container changes like mp4->mkv).
+    Misses heavily degraded copies. Essentially zero false matches.
+
+ 6  Strict. Catches most re-encodes, including modest resolution changes.
+    Very few false matches. Good for clean rips of the same source.
+
+ 8  DEFAULT / BALANCED. Catches re-encodes, resolution drops, and moderate
+    quality loss. Occasional false matches between visually similar videos
+    of the same length (e.g. different episodes sharing an identical intro).
+
+10  Loose. Catches heavily compressed or resized copies. More false
+    matches — expect to un-mark some suggested pairs by hand.
+
+12+ Very loose. Groups anything vaguely similar with similar length.
+    High false-match rate; only useful if you want maximum disk savings
+    and are willing to review every group carefully.
+
+RULE OF THUMB
+-------------
+Start at 8.
+- True duplicates being MISSED?  -> raise the number.
+- Unrelated videos being GROUPED? -> lower the number.
+
+Note: the setting only affects how groups are BUILT. Changing it after a scan
+does not require re-hashing — click "Refresh duplicate list" on the
+Duplicates tab and groups are rebuilt from the cached fingerprints in seconds.
