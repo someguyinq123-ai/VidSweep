@@ -232,6 +232,7 @@ class App(tk.Tk):
         ffrow = ttk.Frame(f); ffrow.pack(fill='x', **pad)
         self._update_ffmpeg_status(f)
         ttk.Button(ffrow, text='Locate ffmpeg…', command=self.locate_ffmpeg).pack(side='left')
+        self._build_scan_tab_rest(f, pad)
 
     def _update_ffmpeg_status(self, parent):
         ff = core.find_ffmpeg()
@@ -258,6 +259,7 @@ class App(tk.Tk):
         self.ffmpeg_status.config(
             text=f'✓ ffmpeg set: {p}', foreground='green')
 
+    def _build_scan_tab_rest(self, f, pad):
         run = ttk.Frame(f); run.pack(fill='x', **pad)
         self.scan_btn = ttk.Button(run, text='Start scan', command=self.start_scan)
         self.scan_btn.pack(side='left')
@@ -384,28 +386,46 @@ class App(tk.Tk):
     def _scan_worker(self, folders, recursive):
         def progress(phase, done, total, cur):
             pct = (done / total * 100) if total else 0
-            self.after(0, self._update_progress, phase, done, total, pct, cur)
+            try:
+                self.after(0, self._update_progress, phase, done, total, pct, cur)
+            except RuntimeError:
+                pass  # window closed mid-scan: keep scanning, skip UI updates
         try:
             stats = self.org.scan(folders, recursive=recursive, progress=progress)
         except core.Cancelled:
-            self.after(0, lambda: self._scan_done(cancelled=True))
+            try:
+                self.after(0, lambda: self._scan_done(cancelled=True))
+            except RuntimeError:
+                pass
             return
         except Exception as e:
-            self.after(0, lambda: self._scan_done(error=str(e)))
+            try:
+                self.after(0, lambda: self._scan_done(error=str(e)))
+            except RuntimeError:
+                pass
             return
-        self.after(0, lambda: self._scan_done(stats=stats))
+        try:
+            self.after(0, lambda: self._scan_done(stats=stats))
+        except RuntimeError:
+            pass
 
     def _update_progress(self, phase, done, total, pct, cur):
         labels = {'scan': 'Finding files', 'hashing': 'Exact hashing',
                   'perceptual': 'Frames & perceptual hashes'}
-        self.progress.config(value=pct)
-        self.status_var.set(f"{labels.get(phase, phase)}: {done}/{total}  {cur}")
+        try:
+            self.progress.config(value=pct)
+            self.status_var.set(f"{labels.get(phase, phase)}: {done}/{total}  {cur}")
+        except (RuntimeError, tk.TclError):
+            pass  # window closed mid-scan
 
     def _scan_done(self, stats=None, cancelled=False, error=None):
-        self.scan_btn.config(state='normal')
-        self.cancel_btn.config(state='disabled')
-        self.pause_btn.config(state='disabled', text='Pause')
-        self.org.resume()  # clear pause flag so a future scan isn't stuck
+        try:
+            self.scan_btn.config(state='normal')
+            self.cancel_btn.config(state='disabled')
+            self.pause_btn.config(state='disabled', text='Pause')
+            self.org.resume()  # clear pause flag so a future scan isn't stuck
+        except (RuntimeError, tk.TclError):
+            return  # window already closed; scan results are saved in the DB
         if error:
             self.status_var.set('Scan failed.')
             self.log_line(f'ERROR: {error}')
