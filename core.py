@@ -141,6 +141,8 @@ class VideoOrganizer:
             fps REAL,
             vcodec TEXT,
             thumbnail BLOB)""")
+        self.db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_files_sha ON files(sha256)')
         self.db.commit()
 
     # ------------------------------------------------------------------ util
@@ -231,31 +233,44 @@ class VideoOrganizer:
 
     # ------------------------------------------------------------- thumbnails
     def _extract_frames(self, path, duration, tmpdir):
-        """Extract sample frames as JPEG bytes list."""
+        """Extract sample frames as JPEG bytes list.
+
+        All 4 timestamps are extracted in ONE ffmpeg process: the same file is
+        passed as 4 inputs, each with its own fast input-side seek. This cuts
+        process-spawn overhead 4x vs one ffmpeg call per frame — identical
+        output frames, identical quality.
+        """
         ffmpeg = find_ffmpeg()
         frames = []
-        times = []
-        for frac in SAMPLE_TIMES:
-            t = duration * frac
-            times.append(t)
-        procs = []
+        times = [duration * frac for frac in SAMPLE_TIMES]
         import uuid
         run_dir = os.path.join(tmpdir, uuid.uuid4().hex)
         os.makedirs(run_dir, exist_ok=True)
         try:
-            for i, t in enumerate(times):
+            cmd = [ffmpeg, '-y', '-v', 'error']
+            for t in times:
+                cmd += ['-ss', f'{t:.3f}', '-i', path]
+            outs = []
+            for i in range(len(times)):
                 out = os.path.join(run_dir, f'f{i}.jpg')
-                cmd = [ffmpeg, '-y', '-v', 'error', '-ss', f'{t:.3f}', '-i', path,
-                       '-frames:v', '1', '-vf', 'scale=256:-2', out]
-                try:
-                    subprocess.run(cmd, capture_output=True, timeout=60,
+                outs.append(out)
+                cmd += ['-map', f'{i}:v', '-frames:v', '1',
+                        '-vf', 'scale=256:-2', out]
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=120,
                                    creationflags=_NO_WINDOW)
-                    with open(out, 'rb') as f:
-                        data = f.read()
-                    if len(data) > 100:
-                        frames.append(data)
-                except Exception:
-                    pass
+                if r.returncode not in (0, 1):  # 1 can mean trailing garbage on some files
+                    raise RuntimeError(r.stderr.decode(errors='replace')[:300])
+                for out in outs:
+                    try:
+                        with open(out, 'rb') as f:
+                            data = f.read()
+                        if len(data) > 100:
+                            frames.append(data)
+                    except OSError:
+                        pass
+            except subprocess.TimeoutExpired:
+                pass
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
         return frames
@@ -296,7 +311,7 @@ class VideoOrganizer:
         if progress:
             progress('scan', 0, total, '')
         stats = {'scanned': 0, 'hashed_exact': 0, 'hashed_perceptual': 0,
-                 'skipped_cached': 0, 'errors': 0}
+                 'skipped_cached': 0, 'errors': 0, 'reused_identical': 0}
 
         cur = self.db.cursor()
         known = {os.path.normcase(r[0]): r for r in cur.execute(
@@ -327,17 +342,33 @@ class VideoOrganizer:
             duration = width = height = fps = vcodec = None
             thumb = None
             hashes = []
-            try:
-                info = self._ffprobe_info(p)
-                duration = info.get('duration')
-                width = info.get('width')
-                height = info.get('height')
-                fps = info.get('fps')
-                vcodec = info.get('vcodec')
-                if duration and HAVE_IMAGEHASH:
-                    thumb, hashes = self._make_thumb_and_phashes(p, duration)
-            except Exception as e:
-                errors.append((p, f'ffprobe/frames: {e}'))
+            # Byte-identical content => identical frames/metadata. If another
+            # file with the same SHA was already fingerprinted (this scan or a
+            # previous one), reuse its result instead of decoding again.
+            reused = False
+            if sha:
+                with self._db_lock:
+                    row = self.db.execute(
+                        'SELECT phash,duration,width,height,fps,vcodec,thumbnail '
+                        'FROM files WHERE sha256=? AND phash IS NOT NULL AND path<>? '
+                        'LIMIT 1', (sha, p)).fetchone()
+                if row:
+                    phash_json, duration, width, height, fps, vcodec, thumb = row
+                    hashes = json.loads(phash_json) if phash_json else []
+                    reused = True
+                    stats['reused_identical'] += 1
+            if not reused:
+                try:
+                    info = self._ffprobe_info(p)
+                    duration = info.get('duration')
+                    width = info.get('width')
+                    height = info.get('height')
+                    fps = info.get('fps')
+                    vcodec = info.get('vcodec')
+                    if duration and HAVE_IMAGEHASH:
+                        thumb, hashes = self._make_thumb_and_phashes(p, duration)
+                except Exception as e:
+                    errors.append((p, f'ffprobe/frames: {e}'))
             cur2 = self.db.cursor()
             with self._db_lock:
                 cur2.execute(
