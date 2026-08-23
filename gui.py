@@ -1,5 +1,5 @@
 """
-Video Organizer — GUI (tkinter).
+VidSweep — GUI (tkinter).
 Tabs:
   1. Scan      — pick folders, run the fingerprint pipeline with live progress
   2. Duplicates— groups with thumbnails, keep/decide each file, act on groups
@@ -97,7 +97,7 @@ class ThumbnailCache:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Video Organizer')
+        self.title('VidSweep — Video Duplicate Finder & Organizer')
         self.geometry('1200x800')
         self.minsize(900, 600)
 
@@ -314,7 +314,7 @@ class App(tk.Tk):
     def start_scan(self):
         folders = list(self.folder_list.get(0, 'end'))
         if not folders:
-            messagebox.showwarning('Video Organizer', 'Add at least one folder first.')
+            messagebox.showwarning('VidSweep', 'Add at least one folder first.')
             return
         self._save_settings()
         self.scan_btn.config(state='disabled')
@@ -345,7 +345,7 @@ class App(tk.Tk):
 
     def reset_library(self):
         if self._scan_thread and self._scan_thread.is_alive():
-            messagebox.showwarning('Video Organizer',
+            messagebox.showwarning('VidSweep',
                                    'A scan is running. Cancel it (and wait for it to stop) before resetting.')
             return
         db_path = self.org.db_path
@@ -366,7 +366,7 @@ class App(tk.Tk):
                 if os.path.isfile(p):
                     os.remove(p)
         except Exception as e:
-            messagebox.showerror('Video Organizer', f'Could not delete database:\n{e}')
+            messagebox.showerror('VidSweep', f'Could not delete database:\n{e}')
             return
         # rebuild a fresh, empty library
         self.org = core.VideoOrganizer(db_path=db_path)
@@ -379,7 +379,7 @@ class App(tk.Tk):
         self._update_marked_count()
         self.log_line('Library reset — database deleted and recreated empty.')
         self.status_var.set('Library reset. Ready for a fresh scan.')
-        messagebox.showinfo('Video Organizer', 'Library deleted and recreated empty.')
+        messagebox.showinfo('VidSweep', 'Library deleted and recreated empty.')
 
     def _scan_worker(self, folders, recursive):
         def progress(phase, done, total, cur):
@@ -409,7 +409,7 @@ class App(tk.Tk):
         if error:
             self.status_var.set('Scan failed.')
             self.log_line(f'ERROR: {error}')
-            messagebox.showerror('Video Organizer', f'Scan failed:\n{error}')
+            messagebox.showerror('VidSweep', f'Scan failed:\n{error}')
             return
         if cancelled:
             self.status_var.set('Scan cancelled.')
@@ -576,7 +576,7 @@ class App(tk.Tk):
 
     def mark_all_keep_best(self):
         if not self.groups:
-            messagebox.showinfo('Video Organizer', 'No groups loaded — scan first.')
+            messagebox.showinfo('VidSweep', 'No groups loaded — scan first.')
             return
         n = 0
         for g in self.groups:
@@ -586,14 +586,14 @@ class App(tk.Tk):
                     if i > 0:
                         n += 1
         self._update_marked_count()
-        messagebox.showinfo('Video Organizer',
+        messagebox.showinfo('VidSweep',
                             f'Marked {n} files for deletion (best copy kept per group).\n'
                             'Review if you like, then click EXECUTE.')
 
     def _keep_best_current_group(self):
         sel = self.group_tree.selection()
         if not sel:
-            messagebox.showinfo('Video Organizer', 'Select a group first.')
+            messagebox.showinfo('VidSweep', 'Select a group first.')
             return
         g = self.groups[int(sel[0])]
         for i, r in enumerate(g):
@@ -628,7 +628,7 @@ class App(tk.Tk):
         to_delete = [p for p, v in self.decisions.items() if v.get() == 'delete']
         to_move = [p for p, v in self.decisions.items() if v.get() == 'move']
         if not to_delete and not to_move:
-            messagebox.showinfo('Video Organizer', 'Nothing marked. Mark files with Keep/Delete/Move first.')
+            messagebox.showinfo('VidSweep', 'Nothing marked. Mark files with Keep/Delete/Move first.')
             return
         # transparent confirmation: list EVERY file, since marking accumulates across groups
         lines = []
@@ -654,7 +654,7 @@ class App(tk.Tk):
             try:
                 import send2trash
             except ImportError:
-                messagebox.showerror('Video Organizer', 'send2trash not installed. Run: pip install send2trash')
+                messagebox.showerror('VidSweep', 'send2trash not installed. Run: pip install send2trash')
                 return
         for p in to_delete:
             try:
@@ -697,7 +697,7 @@ class App(tk.Tk):
                 failed += 1
                 self.log_line(f'FAILED move {p}: {e}')
         self.org.db.commit()
-        messagebox.showinfo('Video Organizer',
+        messagebox.showinfo('VidSweep',
                             f'Deleted: {deleted}, moved: {moved}, failed: {failed}')
         self.load_groups()
 
@@ -729,7 +729,7 @@ class App(tk.Tk):
     def suggest_categories(self):
         src = self.org_source.get()
         if not os.path.isdir(src):
-            messagebox.showwarning('Video Organizer', 'Pick a valid source folder.')
+            messagebox.showwarning('VidSweep', 'Pick a valid source folder.')
             return
         paths = [r[0] for r in self.org.db.execute(
             'SELECT path FROM files')]
@@ -748,7 +748,7 @@ class App(tk.Tk):
         for p, cat, dest in self.org_moves:
             self.org_tree.insert('', 'end', values=(os.path.basename(p), cat, dest))
         self.org_preview_btn.config(state='normal')
-        messagebox.showinfo('Video Organizer',
+        messagebox.showinfo('VidSweep',
                             f'{len(sugg)} videos analyzed, {len(self.org_moves)} would move. '
                             'Review the list, then Preview moves.')
 
@@ -756,12 +756,12 @@ class App(tk.Tk):
         conflicts = [(p, d) for p, _c, d in self.org_moves if os.path.exists(d)]
         if conflicts:
             if not messagebox.askyesno(
-                    'Video Organizer',
+                    'VidSweep',
                     f'{len(conflicts)} destination name(s) already exist — '
                     'those files will be renamed with a suffix. Continue?'):
                 return
         self.org_apply_btn.config(state='normal')
-        messagebox.showinfo('Video Organizer',
+        messagebox.showinfo('VidSweep',
                             f'Preview OK — {len(self.org_moves)} moves ready. Click "Apply moves".')
 
     def apply_moves(self):
@@ -784,7 +784,7 @@ class App(tk.Tk):
                 failed += 1
                 self.log_line(f'FAILED {p}: {e}')
         self.org.db.commit()
-        messagebox.showinfo('Video Organizer', f'Moved {done}, failed {failed}.')
+        messagebox.showinfo('VidSweep', f'Moved {done}, failed {failed}.')
         self.org_apply_btn.config(state='disabled')
 
 
@@ -796,13 +796,13 @@ def main():
         import logging
         log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crash.log')
         logging.basicConfig(filename=log_path, level=logging.ERROR)
-        logging.exception('Video Organizer crashed')
+        logging.exception('VidSweep crashed')
         # also show it in a console if one is attached
         import traceback
         traceback.print_exc()
         try:
             import tkinter.messagebox as mb
-            mb.showerror('Video Organizer — error',
+            mb.showerror('VidSweep — error',
                          f'Startup failed. Details written to:\n{log_path}\n\n'
                          f'{traceback.format_exc()[-800:]}')
         except Exception:

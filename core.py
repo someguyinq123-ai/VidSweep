@@ -1,5 +1,5 @@
 """
-Video Organizer — core engine.
+VidSweep — core engine.
 Scans folders, fingerprints videos, groups exact and perceptual duplicates.
 
 Pipeline:
@@ -51,6 +51,10 @@ def set_ffmpeg_override(ffmpeg_exe):
 
 
 def find_ffmpeg():
+    # 0) CI/testing hook: skip machine-specific paths, use PATH only
+    if os.environ.get('VIDSWEEP_SKIP_DEFAULT_FFMPEG'):
+        from shutil import which
+        return which('ffmpeg')
     # 1) explicit override for this session
     if _ffmpeg_override and os.path.isfile(_ffmpeg_override):
         return _ffmpeg_override

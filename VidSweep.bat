@@ -1,5 +1,5 @@
 @echo off
-rem Video Organizer launcher — finds a Python that actually has the required libraries.
+rem VidSweep launcher — finds a Python that actually has the required libraries.
 cd /d "%~dp0"
 
 for %%P in ("%LOCALAPPDATA%\Python\bin" "C:\Python311" "C:\Python312" "C:\Python313" "C:\Python314") do (

@@ -1,62 +1,69 @@
-# Video Organizer
+# VidSweep
 
-A portable, privacy-first Windows app for organizing large video collections:
-finds duplicate videos (even re-encoded ones), lets you review them with
-thumbnails, and categorizes what remains by name.
+![VidSweep logo](docs/logo.png)
 
-Built for big libraries — tested on the design target of 30,000+ files.
+A portable, privacy-first desktop app for organizing large video collections:
+finds duplicate videos (even re-encoded ones), lets you review them side by
+side with thumbnails, and categorizes what remains by name.
+
+Built for big libraries — designed and tested around 30,000+ files.
+
+## Why VidSweep
+
+- **Finds re-encodes, not just copies.** Byte-identical files are the easy
+  case. VidSweep also matches the same video when it's been re-encoded at a
+  different resolution, bitrate, or container (mp4 → mkv → avi) using
+  perceptual frame hashing.
+- **You decide, quickly.** Every duplicate group is shown as a thumbnail grid
+  with resolution, size, codec and duration. The best copy is pre-marked
+  Keep; one click marks the rest, another click executes.
+- **Nothing leaves your machine.** No telemetry, no network calls, no
+  installer, no registry. Fully offline. Optional privacy hardening: secure
+  delete (overwrite before removal), wipe the database on exit, open videos
+  without leaving player-history traces.
+- **Incremental scans.** All fingerprints live in a local SQLite cache, so
+  the first scan is the slow one; every rescan only touches new or changed
+  files. Pause and resume supported.
 
 ## Features
 
-- **Two-level duplicate detection**
-  - *Exact*: SHA-256 content hashing catches byte-identical copies instantly.
-  - *Perceptual*: samples 4 frames per video and compares DCT perceptual
-    hashes — catches the same video re-encoded at a different resolution,
-    bitrate, or container (mp4 → mkv → avi).
-- **Thumbnail review grid** — every duplicate group shows first-frame
-  screenshots, resolution, size, codec, and duration side by side.
-- **Keep-best auto-suggestion** — the highest-quality copy is pre-marked
-  Keep; one click marks the rest for deletion across all groups.
-- **Your choice of removal**: Recycle Bin (default), quarantine folder, or
-  permanent delete — with an optional secure-delete mode that overwrites
-  bytes first so nothing is recoverable.
-- **Name-based organizer** — clusters remaining files into category folders
-  from their filenames, with a full preview before anything moves.
-- **Incremental scans** — everything is cached in a local SQLite database;
-  rescans only touch new or changed files. Pause/Resume supported.
-- **Privacy options (all off by default)**
-  - Wipe the fingerprint database on exit
-  - Secure delete (overwrite before removal)
-  - Open videos without leaving player-history / Recent Items traces
-- **Portable** — no installer, no registry, no telemetry, fully offline.
-  Delete the folder and it's gone.
+- Two-level duplicate detection: exact (SHA-256) + perceptual (4-frame pHash
+  with duration cross-check)
+- Thumbnail review grid with per-file Keep / Delete / Move
+- "Keep best, delete rest" per group or across all groups
+- Removal via Recycle Bin (default), quarantine folder, permanent delete, or
+  optional secure delete
+- Name-based category organizer with full move preview
+- Tunable match sensitivity with a plain-language guide
+- Cross-platform core engine (see Status below)
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.11+ with: `pip install pillow imagehash send2trash`
-- [ffmpeg/ffprobe](https://www.gyan.dev/ffmpeg/builds/) on disk
-  (default path `C:\ffmpeg\...` is auto-detected; see `core.py` to change it)
-- A display — tkinter GUI, no extra UI toolkit needed
+- Python 3.11+ — `pip install pillow imagehash send2trash`
+- ffmpeg/ffprobe available (auto-detected from PATH or common install
+  locations; a "Locate ffmpeg…" button is built in)
+- A display — the GUI is tkinter, bundled with Python
 
 ## Usage
 
-1. Double-click **`Video Organizer.bat`** (it locates a Python that has the
-   dependencies, and offers one-time setup if none does).
+1. Windows: double-click **`Video Organizer.bat`** (auto-locates a suitable
+   Python and offers one-time dependency setup). Other systems:
+   `python3 gui.py`
 2. **Scan** tab: add folders → Start scan. First scan decodes 4 frames per
-   video, so a 30k-file library takes a few hours; after that, rescans are
-   nearly instant for unchanged files.
-3. **Duplicates** tab: review groups with thumbnails, mark Keep/Delete/Move
-   (marking accumulates across groups — the EXECUTE dialog lists every file
-   so you always see exactly what will happen), then Execute.
+   video (a 30k library takes a few hours); rescans are nearly instant.
+3. **Duplicates** tab: review, mark, Execute — the confirmation dialog lists
+   every file so nothing is ambiguous.
 4. **Organize** tab (optional): preview and apply name-based category folders.
 
-## How perceptual matching works
+## Status
 
-Each video contributes 4 frame fingerprints (64-bit pHash each). Two videos
-group when at least 3 frames match within a bit-difference threshold AND
-durations are within 10%. The sensitivity slider (default 8) sets the
-threshold — see `How sensitivity works.txt` for a level-by-level guide.
+| Platform | Core engine | GUI |
+|---|---|---|
+| Windows | ✅ tested | ✅ tested |
+| Linux / macOS | ✅ CI-verified | expected to work (tkinter); untested by hand |
+
+CI runs the core-engine smoke test (scan → exact + perceptual grouping →
+cache) on Ubuntu, Windows and macOS across Python 3.11/3.12 on every push.
 
 ## License
 

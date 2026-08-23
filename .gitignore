@@ -2,9 +2,11 @@
 library.db
 library.db-wal
 library.db-shm
+library.db-journal
 privacy.json
 settings.json
 crash.log
 quarantine/
+ffmpeg_path.txt
 __pycache__/
 *.pyc

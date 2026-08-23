@@ -1,0 +1,30 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="play" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded app-tile background -->
+  <rect x="16" y="16" width="480" height="480" rx="104"
+        fill="url(#bg)" stroke="#334155" stroke-width="6"/>
+
+  <!-- play button (the video) -->
+  <path d="M172 152 L172 360 L352 256 Z"
+        fill="url(#play)" stroke="url(#play)"
+        stroke-width="28" stroke-linejoin="round"/>
+
+  <!-- sweep swoosh cutting through, dupes flying off the end -->
+  <path d="M112 396 C 210 340, 320 260, 424 148"
+        fill="none" stroke="#f59e0b" stroke-width="22" stroke-linecap="round"/>
+
+  <!-- swept-away duplicate fragments -->
+  <rect x="398" y="112" width="30" height="30" rx="7" fill="#f59e0b" opacity="0.95"/>
+  <rect x="440" y="152" width="22" height="22" rx="6" fill="#f59e0b" opacity="0.60"/>
+  <rect x="452" y="200" width="15" height="15" rx="5" fill="#f59e0b" opacity="0.35"/>
+</svg>
