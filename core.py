@@ -527,11 +527,17 @@ class VideoOrganizer:
 
     @staticmethod
     def _quality_key(r):
-        """Higher = better copy. Prefer resolution, then bitrate proxy, then codec."""
+        """
+        Higher = better copy. Bitrate (size/duration) is the primary signal:
+        it captures actual detail much better than resolution alone — a sharp
+        720p at 6 Mbps beats a blurry 1080p at 1 Mbps. Resolution is the tie-
+        breaker, then a modern-codec bonus.
+        """
+        dur = r.get('duration') or 0
+        bitrate = (r['size'] / dur) if dur > 0 else 0
         res = (r.get('height') or 0) * (r.get('width') or 0)
-        bitrate_proxy = (r['size'] / r['duration']) if r.get('duration') else 0
         good_codec = 1 if (r.get('vcodec') or '') in ('h264', 'hevc', 'av1', 'vp9') else 0
-        return (res, bitrate_proxy, good_codec)
+        return (bitrate, res, good_codec)
 
     # ------------------------------------------------------------ thumbnails
     def get_thumbnail(self, path):

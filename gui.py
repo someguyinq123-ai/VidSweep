@@ -543,8 +543,10 @@ class App(tk.Tk):
             name = r['path']
             ttk.Label(info, text=name, wraplength=520).pack(anchor='w')
             dur = f"{int(r['duration']//60)}:{int(r['duration']%60):02d}" if r['duration'] else '?'
+            br = (r['size'] / r['duration']) if r.get('duration') else 0
+            br_str = f"{br/1e6:.2f} Mbps" if br else '?'
             ttk.Label(info, text=(
-                f"{r['width']}x{r['height']}  {r['size']/1e6:,.1f} MB  {dur}  "
+                f"{r['width']}x{r['height']}  {r['size']/1e6:,.1f} MB  {br_str}  {dur}  "
                 f"{r['vcodec'] or '?'}  {'EXACT COPY' if i > 0 and r['sha'] == best['sha'] else ''}"
                 )).pack(anchor='w')
             # preserve a decision the user already made for this file
@@ -601,13 +603,20 @@ class App(tk.Tk):
         n = 0
         for g in self.groups:
             for i, r in enumerate(g):
-                if r['path'] in self.decisions:
-                    self.decisions[r['path']].set('keep' if i == 0 else 'delete')
-                    if i > 0:
-                        n += 1
+                v = self.decisions.get(r['path'])
+                if v is None:
+                    # group never opened: create the decision now so EXECUTE sees it
+                    v = tk.StringVar(value='keep' if i == 0 else 'delete')
+                    v.trace_add('write', lambda *a: self._update_marked_count())
+                    self.decisions[r['path']] = v
+                else:
+                    v.set('keep' if i == 0 else 'delete')
+                if i > 0:
+                    n += 1
         self._update_marked_count()
         messagebox.showinfo('VidSweep',
-                            f'Marked {n} files for deletion (best copy kept per group).\n'
+                            f'Marked {n} files for deletion across ALL {len(self.groups)} groups '
+                            '(best copy kept per group).\n'
                             'Review if you like, then click EXECUTE.')
 
     def _keep_best_current_group(self):
@@ -617,8 +626,13 @@ class App(tk.Tk):
             return
         g = self.groups[int(sel[0])]
         for i, r in enumerate(g):
-            if r['path'] in self.decisions:
-                self.decisions[r['path']].set('keep' if i == 0 else 'delete')
+            v = self.decisions.get(r['path'])
+            if v is None:
+                v = tk.StringVar(value='keep' if i == 0 else 'delete')
+                v.trace_add('write', lambda *a: self._update_marked_count())
+                self.decisions[r['path']] = v
+            else:
+                v.set('keep' if i == 0 else 'delete')
         self._update_marked_count()
 
     def _update_marked_count(self):
