@@ -28,6 +28,14 @@ app.thumbs = gui.ThumbnailCache(app.org)
 stats = app.org.scan([a], recursive=True)
 assert stats['errors'] == 0, stats.get('error_details')
 app.load_groups()
+# load_groups is now asynchronous (worker thread + event-loop poll):
+# pump Tk events until the summary label shows the loaded count.
+import time as _t
+_deadline = _t.time() + 180
+while 'duplicate group' not in app.dupe_summary.cget('text'):
+    assert _t.time() < _deadline, 'load_groups never completed'
+    app.update()
+    _t.sleep(0.05)
 print('groups loaded:', len(app.groups))
 assert len(app.groups) == 45, f'expected 45 groups, got {len(app.groups)}'
 

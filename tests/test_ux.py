@@ -76,16 +76,25 @@ def run():
             app.open_privacy_settings()
             win = app.nametowidget(app.winfo_children()[-1])
             app.update()
+            # checkboxes/desc-labels live inside the padded inner frame,
+            # so walk all descendants, not just direct children
+            def descendants(w):
+                yield w
+                for c in w.winfo_children():
+                    yield from descendants(c)
             boxes = []
-            labels_checked = 0
-            for w in win.winfo_children():
+            desc_rows = set()
+            for w in descendants(win):
                 if isinstance(w, gui.tk.ttk.Checkbutton):
-                    boxes.append(w.winfo_bbox())
+                    boxes.append(w)
                 elif isinstance(w, gui.tk.ttk.Label) and w.cget('wraplength'):
-                    labels_checked += 1
-            assert len(boxes) == 3 and labels_checked >= 3, (len(boxes), labels_checked)
-            # each checkbox must NOT vertically overlap its description label
-            log(f'privacy dialog: {len(boxes)} checkboxes, {labels_checked} desc labels, no overlap assert passed via grid rows')
+                    desc_rows.add(w.grid_info()['row'])
+            box_rows = [b.grid_info()['row'] for b in boxes]
+            # every checkbox on its own row, none sharing a row with a
+            # description label or the header (row 0)
+            assert len(boxes) == 3 and len(desc_rows) >= 3, (len(boxes), len(desc_rows))
+            assert len(set(box_rows)) == 3 and not (set(box_rows) & desc_rows) \
+                and 0 not in box_rows, (box_rows, desc_rows)
             win.destroy()
             app.destroy()
             print('\n'.join(state['events']))
