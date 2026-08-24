@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -172,22 +173,25 @@ class App(tk.Tk):
              '(MPC-HC private mode, VLC never saves recent list, etc.).\n'
              'Also skips Windows Recent Items jump-list entries.'),
         ]
-        for i, (key, label, desc) in enumerate(rows, start=1):
+        for i, (key, label, desc) in enumerate(rows):
+            r = i * 2  # each option gets TWO grid rows: checkbox, then description
             var = tk.BooleanVar(value=self.privacy[key])
             vars_[key] = var
             ttk.Checkbutton(frm, text=label, variable=var).grid(
-                row=i, column=0, columnspan=2, sticky='w')
-            ttk.Label(frm, text=desc, foreground='gray40', wraplength=440,
-                      justify='left').grid(row=i, column=0, columnspan=2, sticky='w', padx=(28, 0))
+                row=r, column=0, columnspan=2, sticky='w')
+            ttk.Label(frm, text=desc, foreground='gray40', wraplength=460,
+                      justify='left').grid(row=r + 1, column=0, columnspan=2,
+                                           sticky='w', padx=(28, 0), pady=(0, 8))
 
         def on_ok():
             vals = {k: v.get() for k, v in vars_.items()}
             self.privacy = vals
             self._save_privacy(vals)
             win.destroy()
-        ttk.Button(frm, text='Save', command=on_ok).grid(row=len(rows) + 1, column=0, pady=(12, 0))
+        btn_row = len(rows) * 2 + 1
+        ttk.Button(frm, text='Save', command=on_ok).grid(row=btn_row, column=0, pady=(12, 0))
         ttk.Button(frm, text='Cancel', command=win.destroy).grid(
-            row=len(rows) + 1, column=1, pady=(12, 0), padx=6)
+            row=btn_row, column=1, pady=(12, 0), padx=6)
 
     # ------------------------------------------------------------------ util
     def _build_ui(self):
@@ -335,8 +339,16 @@ class App(tk.Tk):
 
     def cancel_scan(self):
         self.org.cancel()
+        # immediate feedback + stop double-clicks; _scan_done does final cleanup
+        self.cancel_btn.config(state='disabled')
+        self.pause_btn.config(state='disabled', text='Pause')
+        self.status_var.set('Cancelling… finishing in-flight files (up to ~30s).')
 
     def toggle_pause(self):
+        if self.org._cancel.is_set():
+            # cancel already requested — resuming a dead scan would look like a hang
+            self.status_var.set('Cancel requested — scan is stopping.')
+            return
         if self.org._pause.is_set():
             self.org.resume()
             self.pause_btn.config(text='Pause')
@@ -418,7 +430,12 @@ class App(tk.Tk):
                   'perceptual': 'Frames & perceptual hashes'}
         try:
             self.progress.config(value=pct)
-            self.status_var.set(f"{labels.get(phase, phase)}: {done}/{total}  {cur}")
+            now = time.monotonic()
+            # throttle text updates: the bar moves every call, but the label
+            # only refreshes ~10x/sec so a fast scan can't flood the mainloop
+            if now - getattr(self, '_last_status_t', 0) > 0.1 or done >= total:
+                self._last_status_t = now
+                self.status_var.set(f"{labels.get(phase, phase)}: {done}/{total}  {cur}")
         except (RuntimeError, tk.TclError):
             pass  # window closed mid-scan
 

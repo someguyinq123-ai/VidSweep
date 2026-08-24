@@ -337,7 +337,10 @@ class VideoOrganizer:
 
         def process_one(item):
             p, size, mtime = item
-            self._check_cancel()
+            # Workers MUST honor pause/cancel too — otherwise "pause" only
+            # freezes the progress display while decoding continues silently,
+            # and resume floods the UI with a backlog of updates.
+            self._wait_if_paused()
             sha = digests.get(p)
             duration = width = height = fps = vcodec = None
             thumb = None
@@ -403,8 +406,9 @@ class VideoOrganizer:
                 p, s, m = futures[fut]
                 try:
                     digest = fut.result()
-                    cur.execute(
-                        'UPDATE files SET sha256=? WHERE path=?', (digest, p))
+                    with self._db_lock:
+                        cur.execute(
+                            'UPDATE files SET sha256=? WHERE path=?', (digest, p))
                     digests[p] = digest
                 except Cancelled:
                     for f2 in futures:
