@@ -129,6 +129,10 @@ class VideoOrganizer:
         self._db_lock = threading.Lock()
         self._cancel = threading.Event()
         self._pause = threading.Event()
+        # live registry of running ffmpeg/ffprobe processes so cancel can kill
+        # them instead of waiting out long decodes of huge files
+        self._procs = set()
+        self._procs_lock = threading.Lock()
         self.db.execute("""CREATE TABLE IF NOT EXISTS files(
             path TEXT PRIMARY KEY,
             size INTEGER,
@@ -148,6 +152,14 @@ class VideoOrganizer:
     # ------------------------------------------------------------------ util
     def cancel(self):
         self._cancel.set()
+        # kill any in-flight ffmpeg/ffprobe immediately — don't wait out the decode
+        with self._procs_lock:
+            procs = list(self._procs)
+        for p in procs:
+            try:
+                p.kill()
+            except Exception:
+                pass
 
     def pause(self):
         self._pause.set()
@@ -197,17 +209,35 @@ class VideoOrganizer:
                 if not chunk:
                     break
                 h.update(chunk)
+                # abort promptly on cancel/pause instead of reading GBs first
+                self._check_cancel()
+                self._wait_if_paused()
         return h.hexdigest()
+
+    def _run_tracked(self, cmd, timeout, **kw):
+        """Run a subprocess registered for kill-on-cancel."""
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, **kw)
+        with self._procs_lock:
+            self._procs.add(proc)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        finally:
+            with self._procs_lock:
+                self._procs.discard(proc)
+        return type('R', (), {'returncode': proc.returncode,
+                              'stdout': out, 'stderr': err})()
 
     def _ffprobe_info(self, path):
         ffprobe = find_ffprobe()
         try:
-            out = subprocess.run(
+            self._check_cancel()
+            out = self._run_tracked(
                 [ffprobe, '-v', 'error', '-print_format', 'json',
                  '-show_entries',
                  'format=duration:stream=codec_type,width,height,r_frame_rate,codec_name',
                  path],
-                capture_output=True, text=True, timeout=30,
+                timeout=30, text=True,
                 creationflags=_NO_WINDOW)
             info = json.loads(out.stdout or '{}')
         except Exception:
@@ -257,8 +287,8 @@ class VideoOrganizer:
                 cmd += ['-map', f'{i}:v', '-frames:v', '1',
                         '-vf', 'scale=256:-2', out]
             try:
-                r = subprocess.run(cmd, capture_output=True, timeout=120,
-                                   creationflags=_NO_WINDOW)
+                r = self._run_tracked(cmd, timeout=120,
+                                      creationflags=_NO_WINDOW)
                 if r.returncode not in (0, 1):  # 1 can mean trailing garbage on some files
                     raise RuntimeError(r.stderr.decode(errors='replace')[:300])
                 for out in outs:
