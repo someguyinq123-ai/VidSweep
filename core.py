@@ -437,9 +437,9 @@ class VideoOrganizer:
                 p, s, m = futures[fut]
                 try:
                     digest = fut.result()
-                    with self._db_lock:
-                        cur.execute(
-                            'UPDATE files SET sha256=? WHERE path=?', (digest, p))
+                    # NOTE: no DB write here — new files have no row yet
+                    # (rows are created in Stage B); a bare UPDATE matched
+                    # nothing. The digest travels in `digests` instead.
                     digests[p] = digest
                 except Cancelled:
                     for f2 in futures:

@@ -1102,9 +1102,16 @@ class App(tk.Tk):
             if not dest_dir:
                 continue
             try:
-                shutil.move(p, os.path.join(dest_dir, os.path.basename(p)))
+                base, ext = os.path.splitext(os.path.basename(p))
+                dest = os.path.join(dest_dir, base + ext)
+                k = 1
+                # never overwrite: same-name collisions get a numbered suffix
+                while os.path.exists(dest):
+                    dest = os.path.join(dest_dir, f'{base}_{k}{ext}')
+                    k += 1
+                shutil.move(p, dest)
                 self.org.db.execute('UPDATE files SET path=? WHERE path=?',
-                                    (os.path.join(dest_dir, os.path.basename(p)), p))
+                                    (dest, p))
                 self.org.db.commit()
                 moved += 1
             except Exception as e:
