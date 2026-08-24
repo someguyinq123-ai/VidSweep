@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -209,14 +210,16 @@ class _SensitivityHelpDialog(tk.Toplevel):
 class ThumbnailCache:
     """Loads JPEG blobs from db, decodes to PhotoImage at fixed size."""
 
-    def __init__(self, organizer, size=(160, 90)):
+    def __init__(self, organizer, size=(160, 90), max_items=200):
         self.org = organizer
         self.size = size
-        self._cache = {}
+        self._cache = OrderedDict()  # path -> PhotoImage, LRU order (oldest first)
         self._missing = None  # 1x1 gray
+        self._max_items = max_items
 
     def get(self, path):
         if path in self._cache:
+            self._cache.move_to_end(path)  # mark most-recently-used
             return self._cache[path]
         blob = self.org.get_thumbnail(path)
         img = None
@@ -233,6 +236,8 @@ class ThumbnailCache:
                     Image.new('RGB', self.size, (60, 60, 60)))
             img = self._missing
         self._cache[path] = img
+        while len(self._cache) > self._max_items:
+            self._cache.popitem(last=False)  # evict least-recently-used
         return img
 
 
@@ -315,7 +320,7 @@ class App(tk.Tk):
              'Also skips Windows Recent Items jump-list entries.'),
         ]
         for i, (key, label, desc) in enumerate(rows):
-            r = i * 2  # each option gets TWO grid rows: checkbox, then description
+            r = i * 2 + 1  # +1: row 0 is the header line (was colliding before)
             var = tk.BooleanVar(value=self.privacy[key])
             vars_[key] = var
             ttk.Checkbutton(frm, text=label, variable=var).grid(
@@ -558,25 +563,25 @@ class App(tk.Tk):
             pct = (done / total * 100) if total else 0
             try:
                 self.after(0, self._update_progress, phase, done, total, pct, cur)
-            except RuntimeError:
+            except (RuntimeError, tk.TclError):
                 pass  # window closed mid-scan: keep scanning, skip UI updates
         try:
             stats = self.org.scan(folders, recursive=recursive, progress=progress)
         except core.Cancelled:
             try:
                 self.after(0, lambda: self._scan_done(cancelled=True))
-            except RuntimeError:
+            except (RuntimeError, tk.TclError):
                 pass
             return
         except Exception as e:
             try:
                 self.after(0, lambda: self._scan_done(error=str(e)))
-            except RuntimeError:
+            except (RuntimeError, tk.TclError):
                 pass
             return
         try:
             self.after(0, lambda: self._scan_done(stats=stats))
-        except RuntimeError:
+        except (RuntimeError, tk.TclError):
             pass
 
     def _update_progress(self, phase, done, total, pct, cur):
@@ -623,7 +628,9 @@ class App(tk.Tk):
     def _build_dupes_tab(self):
         f = self.tab_dupes
         top = ttk.Frame(f); top.pack(fill='x', padx=10, pady=6)
-        ttk.Button(top, text='Refresh duplicate list', command=self.load_groups).pack(side='left')
+        ttk.Button(top, text='Refresh duplicate list', command=self.load_groups)
+        self.refresh_btn = top.winfo_children()[-1]
+        self.refresh_btn.pack(side='left')
         self.dupe_summary = ttk.Label(top, text='')
         self.dupe_summary.pack(side='left', padx=12)
 
@@ -683,9 +690,42 @@ class App(tk.Tk):
         paned.add(right, weight=3)
 
     def load_groups(self):
+        # Run the CPU-bound comparison in a background thread so the UI
+        # stays responsive; results are applied back on the main thread.
+        self.refresh_btn.config(state='disabled')
+        self.status_var.set('Loading duplicate groups…')
+        threshold = self.sens_var.get()  # read tk variable on main thread only
+        self.update_idletasks()
+        self._load_result = None  # set by worker, consumed by _poll_load_result
+
+        def _worker():
+            try:
+                groups = self.org.find_duplicates(threshold=threshold)
+                self._load_result = (groups, None)
+            except Exception as e:
+                self._load_result = (None, str(e))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._poll_load_result()
+
+    def _poll_load_result(self):
+        res = getattr(self, '_load_result', None)
+        if res is None:
+            try:
+                self.after(50, self._poll_load_result)
+            except (RuntimeError, tk.TclError):
+                pass  # window gone: worker result simply never gets applied
+            return
+        self._load_result = None
+        groups, err = res
+        self.refresh_btn.config(state='normal')
+        if err:
+            self.status_var.set(f'Error loading groups: {err}')
+            messagebox.showerror('VidSweep', f'Failed to load duplicate groups:\n{err}')
+            return
+        self.groups = groups
         for iid in self.group_tree.get_children():
             self.group_tree.delete(iid)
-        self.groups = self.org.find_duplicates(threshold=self.sens_var.get())
         total_waste = 0
         for gi, g in enumerate(self.groups):
             waste = sum(r['size'] for r in g[1:])
@@ -695,6 +735,8 @@ class App(tk.Tk):
         self.dupe_summary.config(
             text=f'{len(self.groups)} duplicate groups — {total_waste/1e9:.2f} GB redundant')
         self.decisions.clear()
+        self.status_var.set(f'Loaded {len(self.groups)} duplicate groups.')
+        self._update_marked_count()  # decisions were just cleared
 
     def _on_group_selected(self, _evt):
         sel = self.group_tree.selection()
@@ -739,6 +781,7 @@ class App(tk.Tk):
                        command=lambda p=r['path']: self._open_file(p)).pack(side='left', padx=6)
             if i == 0:
                 ttk.Label(rbf, text='← suggested keep (best quality)').pack(side='left', padx=6)
+        self._update_marked_count()  # refresh count when revisiting a group
 
     def _open_file(self, path):
         if self.privacy.get('open_no_history'):
