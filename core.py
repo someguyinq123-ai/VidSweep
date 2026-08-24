@@ -33,6 +33,15 @@ try:
 except ImportError:
     HAVE_IMAGEHASH = False
 
+try:
+    import numpy as _np
+    _have_numpy = True
+    # numpy >= 2.0: hardware popcount enables a much faster Hamming path
+    _have_popcount = hasattr(_np, 'bitwise_count')
+except ImportError:
+    _have_numpy = False
+    _have_popcount = False
+
 VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
               '.m4v', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.vob',
               '.3gp', '.ogv', '.rm', '.rmvb', '.asf', '.divx', '.f4v'}
@@ -87,14 +96,6 @@ HAMMING_THRESHOLD = 8                      # per-frame max bit difference
 
 # On Windows, prevent ffmpeg/ffprobe console windows from popping up
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-
-
-def find_ffmpeg():
-    for p in (DEFAULT_FFMPEG, ):
-        if os.path.isfile(p):
-            return p
-    from shutil import which
-    return which('ffmpeg')
 
 
 def find_ffprobe():
@@ -526,16 +527,22 @@ class VideoOrganizer:
 
         # --- perceptual matching
         if use_perceptual and HAVE_IMAGEHASH:
-            # index by each frame hash bucket: compare within buckets only
-            from collections import defaultdict
-            bucket = defaultdict(list)
-            for i, r in enumerate(recs):
-                for h in r['hashes']:
-                    ih = imagehash.hex_to_hash(h)
-                    bucket[h].append(i)
-                    # also coarse bucket: first 8 bits variants are expensive;
-                    # simple approach below uses pairwise within same-duration bands
-                    r.setdefault('_ih', []).append(ih)
+            # Decode frame hashes once; _similarity works on the packed bits
+            # (numpy path) or ImageHash objects (fallback).
+            for r in recs:
+                ihs = [imagehash.hex_to_hash(h) for h in r['hashes']]
+                r['_ih'] = ihs  # kept for the no-numpy fallback in _similarity
+                if _have_numpy:
+                    import numpy as np
+                    bits = np.array([list(ih.hash) for ih in ihs],
+                                    dtype=bool).reshape(len(ihs), -1)
+                    if _have_popcount:
+                        # pack each 64-bit hash into one uint64 for the
+                        # hardware-popcount fast path in _similarity
+                        r['_packed'] = (np.packbits(bits, axis=1)
+                                        .view('>u8').ravel()
+                                        .astype(np.uint64))
+                    r['_bits'] = bits
             # Pairwise comparison restricted to similar durations to keep O manageable.
             # Sort by duration and only compare neighbors within overlap window.
             order = sorted(range(n), key=lambda i: (recs[i]['duration'] or 0))
@@ -577,17 +584,29 @@ class VideoOrganizer:
 
     @staticmethod
     def _similarity(a, b, threshold):
-        ha, hb = a.get('_ih'), b.get('_ih')
-        if not ha or not hb:
+        pa, pb = a.get('_packed'), b.get('_packed')
+        if _have_popcount and pa is not None and pb is not None:
+            # fast path: XOR + hardware popcount on packed uint64 hashes
+            shorter, longer = (pa, pb) if len(pa) <= len(pb) else (pb, pa)
+            dists = _np.bitwise_count(shorter[:, None] ^ longer[None, :])
+            matched = int(_np.sum(dists.min(axis=1) <= threshold))
+            return matched >= max(2, int(0.75 * len(shorter)))
+        ha, hb = a.get('_bits'), b.get('_bits')
+        if _have_numpy and ha is not None and hb is not None:
+            # vectorized fallback: all frame-pair Hamming distances at once
+            shorter, longer = (ha, hb) if len(ha) <= len(hb) else (hb, ha)
+            dists = _np.count_nonzero(shorter[:, None, :] != longer[None, :, :],
+                                      axis=2)
+            matched = int(_np.sum(dists.min(axis=1) <= threshold))
+            return matched >= max(2, int(0.75 * len(shorter)))
+        # original imagehash path (no numpy at all)
+        ia, ib = a.get('_ih'), b.get('_ih')
+        if not ia or not ib:
             return False
-        # match every frame of the shorter list against best of other
-        shorter = ha if len(ha) <= len(hb) else hb
-        longer = hb if shorter is ha else ha
-        matched = 0
-        for x in shorter:
-            best = min((x - y) for y in longer)
-            if best <= threshold:
-                matched += 1
+        shorter = ia if len(ia) <= len(ib) else ib
+        longer = ib if shorter is ia else ia
+        matched = sum(1 for x in shorter
+                      if min((x - y) for y in longer) <= threshold)
         return matched >= max(2, int(0.75 * len(shorter)))
 
     @staticmethod
