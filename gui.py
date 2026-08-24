@@ -342,7 +342,20 @@ class App(tk.Tk):
         # immediate feedback + stop double-clicks; _scan_done does final cleanup
         self.cancel_btn.config(state='disabled')
         self.pause_btn.config(state='disabled', text='Pause')
-        self.status_var.set('Cancelling… finishing in-flight files (up to ~30s).')
+        # marching stripes + live counter so "cancelling" never looks like a hang
+        self.progress.config(mode='indeterminate')
+        self.progress.start(40)
+        self._cancel_t0 = time.monotonic()
+        self._poll_cancel()
+
+    def _poll_cancel(self):
+        th = self._scan_thread
+        if th is None or not th.is_alive():
+            return  # _scan_done fires separately and finalizes the UI
+        elapsed = time.monotonic() - self._cancel_t0
+        self.status_var.set(
+            f'Cancelling… {elapsed:.0f}s (finishing in-flight files)')
+        self._cancel_job = self.after(250, self._poll_cancel)
 
     def toggle_pause(self):
         if self.org._cancel.is_set():
@@ -441,6 +454,8 @@ class App(tk.Tk):
 
     def _scan_done(self, stats=None, cancelled=False, error=None):
         try:
+            self.progress.stop()
+            self.progress.config(mode='determinate', value=0)
             self.scan_btn.config(state='normal')
             self.cancel_btn.config(state='disabled')
             self.pause_btn.config(state='disabled', text='Pause')
