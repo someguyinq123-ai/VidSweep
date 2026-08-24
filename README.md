@@ -23,32 +23,43 @@ Built for big libraries — designed and tested around 30,000+ files.
   without leaving player-history traces.
 - **Incremental scans.** All fingerprints live in a local SQLite cache, so
   the first scan is the slow one; every rescan only touches new or changed
-  files. Pause and resume supported.
+  files. Pause and resume supported — cancelling even kills in-flight
+  ffmpeg processes instead of waiting out long decodes.
 
 ## Features
 
 - Two-level duplicate detection: exact (SHA-256) + perceptual (4-frame pHash
   with duration cross-check)
-- Thumbnail review grid with per-file Keep / Delete / Move
-- "Keep best, delete rest" per group or across all groups
+- Hardware-accelerated matching: frame comparisons use SIMD popcount via
+  NumPy ≥ 2 where available, with vectorized and pure-Python fallbacks that
+  produce identical results
+- Responsive UI: duplicate loading and scanning run on background threads;
+  the window stays interactive during multi-minute operations
+- Thumbnail review grid with per-file Keep / Delete / Move, backed by an
+  LRU-capped thumbnail cache so long review sessions don't grow memory
+- "Keep best, delete rest" per group or across all groups — best copy is
+  chosen by bitrate first, so a sharp 720p beats a blurry 1080p
+- Safe moves: moving a file to a folder where its name already exists never
+  overwrites — collisions get numbered suffixes (`video.mp4` → `video_1.mp4`)
 - Removal via Recycle Bin (default), quarantine folder, permanent delete, or
   optional secure delete
 - Name-based category organizer with full move preview
 - Tunable match sensitivity with a plain-language guide
-- Cross-platform core engine (see Status below)
+- Light and dark themes with an instant toggle; your choice is remembered
 
 ## Requirements
 
-- Python 3.11+ — `pip install pillow imagehash send2trash`
+- Python 3.11+ — `pip install pillow imagehash send2trash numpy`
+  (NumPy is optional but strongly recommended: it makes duplicate matching
+  several times faster)
 - ffmpeg/ffprobe available (auto-detected from PATH or common install
   locations; a "Locate ffmpeg…" button is built in)
 - A display — the GUI is tkinter, bundled with Python
 
 ## Usage
 
-1. Windows: double-click **`Video Organizer.bat`** (auto-locates a suitable
-   Python and offers one-time dependency setup). Other systems:
-   `python3 gui.py`
+1. Windows: double-click **`VidSweep.bat`** (auto-locates a suitable Python
+   and offers one-time dependency setup). Other systems: `python3 gui.py`
 2. **Scan** tab: add folders → Start scan. First scan decodes 4 frames per
    video (a 30k library takes a few hours); rescans are nearly instant.
 3. **Duplicates** tab: review, mark, Execute — the confirmation dialog lists
