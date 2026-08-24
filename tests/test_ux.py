@@ -96,6 +96,10 @@ def run():
             assert len(set(box_rows)) == 3 and not (set(box_rows) & desc_rows) \
                 and 0 not in box_rows, (box_rows, desc_rows)
             win.destroy()
+            # don't leak the test folder into user's real settings.json
+            app.folder_list.delete(0, 'end')
+            app._save_settings()
+            app.update()
             app.destroy()
             print('\n'.join(state['events']))
             print('UX TESTS PASS')

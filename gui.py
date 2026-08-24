@@ -24,6 +24,38 @@ import core
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# ---- theme palettes ------------------------------------------------------
+# Every color used by custom-painted surfaces lives here; ttk styles and the
+# dialogs read from one dict so light/dark stay consistent.
+THEMES = {
+    'light': {
+        'bg': '#f8fafc', 'fg': '#1e293b', 'muted': '#64748b',
+        'card': '#ffffff', 'card2': '#f1f5f9', 'hover': '#e2e8f0',
+        'border': '#cbd5e1', 'select': '#dbeafe', 'select_fg': '#1e293b',
+        'accent': '#2563eb', 'tab_fg': '#ffffff',
+        'head_bg': '#0f172a', 'head_fg': '#ffffff', 'head_sub': '#94a3b8',
+        'foot_bg': '#f1f5f9',
+        'section_fg': '#334155', 'para_fg': '#1e293b',
+        'card_border': '#e2e8f0', 'card_title': '#0f172a',
+        'card_desc': '#475569',
+        'tip_bg': '#fefce8', 'tip_border': '#fde047',
+        'tip_title': '#713f12', 'tip_text': '#854d0e',
+    },
+    'dark': {
+        'bg': '#0f172a', 'fg': '#e2e8f0', 'muted': '#94a3b8',
+        'card': '#1e293b', 'card2': '#26334d', 'hover': '#3b4a63',
+        'border': '#334155', 'select': '#2563eb', 'select_fg': '#ffffff',
+        'accent': '#3b82f6', 'tab_fg': '#ffffff',
+        'head_bg': '#020617', 'head_fg': '#ffffff', 'head_sub': '#94a3b8',
+        'foot_bg': '#1e293b',
+        'section_fg': '#cbd5e1', 'para_fg': '#e2e8f0',
+        'card_border': '#334155', 'card_title': '#f1f5f9',
+        'card_desc': '#94a3b8',
+        'tip_bg': '#3a3010', 'tip_border': '#ca8a04',
+        'tip_title': '#fde047', 'tip_text': '#fbbf24',
+    },
+}
+
 SENSITIVITY_HELP_TEXT = """\
 HOW PERCEPTUAL MATCH SENSITIVITY WORKS
 
@@ -95,22 +127,23 @@ class _SensitivityHelpDialog(tk.Toplevel):
         self.transient(master)
         self.geometry('640x640')
         self.minsize(560, 480)
-        bg = self._bg = '#f8fafc'
+        c = self._c = getattr(master, 'theme', THEMES['light'])
+        bg = self._bg = c['bg']
         self.configure(bg=bg)
 
         # ---- header band -------------------------------------------------
-        head = tk.Frame(self, bg='#0f172a', padx=20, pady=14)
+        head = tk.Frame(self, bg=c['head_bg'], padx=20, pady=14)
         head.pack(fill='x')
         tk.Label(head, text='Perceptual Match Sensitivity',
-                 font=('Segoe UI', 15, 'bold'), fg='#ffffff', bg='#0f172a'
+                 font=('Segoe UI', 15, 'bold'), fg=c['head_fg'], bg=c['head_bg']
                  ).pack(anchor='w')
         tk.Label(head,
                  text='How strictly videos must look alike to be grouped as duplicates',
-                 font=('Segoe UI', 9), fg='#94a3b8', bg='#0f172a'
+                 font=('Segoe UI', 9), fg=c['head_sub'], bg=c['head_bg']
                  ).pack(anchor='w')
 
         # ---- footer button (packed FIRST so it keeps its strip at the bottom)
-        foot = tk.Frame(self, bg='#f1f5f9', pady=10)
+        foot = tk.Frame(self, bg=c['foot_bg'], pady=10)
         foot.pack(fill='x', side='bottom')
         ok = ttk.Button(foot, text='Got it', command=self.destroy)
         ok.pack(padx=20)
@@ -143,10 +176,10 @@ class _SensitivityHelpDialog(tk.Toplevel):
             f = tk.Frame(body, bg=bg)
             f.pack(fill='x', pady=(18, 4), **pad)
             tk.Label(f, text=title.upper(), font=('Segoe UI', 9, 'bold'),
-                     fg='#334155', bg=bg).pack(anchor='w')
+                     fg=c['section_fg'], bg=bg).pack(anchor='w')
 
         def para(text, wl=550):
-            tk.Label(body, text=text, font=('Segoe UI', 10), fg='#1e293b',
+            tk.Label(body, text=text, font=('Segoe UI', 10), fg=c['para_fg'],
                      bg=bg, wraplength=wl, justify='left'
                      ).pack(anchor='w', pady=2, **pad)
 
@@ -168,31 +201,32 @@ class _SensitivityHelpDialog(tk.Toplevel):
 
         section('Level-by-level guide')
         for value, name, color, desc in self.LEVELS:
-            row = tk.Frame(body, bg='#ffffff', padx=12, pady=10,
-                           highlightbackground='#e2e8f0', highlightthickness=1)
+            row = tk.Frame(body, bg=c['card'], padx=12, pady=10,
+                           highlightbackground=c['card_border'],
+                           highlightthickness=1)
             row.pack(fill='x', pady=(0, 2), **pad)
             badge = tk.Label(row, text=value, font=('Consolas', 11, 'bold'),
                              fg='#ffffff', bg=color, width=4, pady=4)
             badge.pack(side='left', anchor='n', padx=(0, 12))
-            right = tk.Frame(row, bg='#ffffff')
+            right = tk.Frame(row, bg=c['card'])
             right.pack(side='left', fill='x', expand=True)
             tk.Label(right, text=name, font=('Segoe UI', 10, 'bold'),
-                     fg='#0f172a', bg='#ffffff'
+                     fg=c['card_title'], bg=c['card']
                      ).pack(anchor='w')
-            tk.Label(right, text=desc, font=('Segoe UI', 9), fg='#475569',
-                     bg='#ffffff', wraplength=480, justify='left'
+            tk.Label(right, text=desc, font=('Segoe UI', 9), fg=c['card_desc'],
+                     bg=c['card'], wraplength=480, justify='left'
                      ).pack(anchor='w')
 
         # rule of thumb callout
-        tip = tk.Frame(body, bg='#fefce8', padx=12, pady=10,
-                       highlightbackground='#fde047', highlightthickness=1)
+        tip = tk.Frame(body, bg=c['tip_bg'], padx=12, pady=10,
+                       highlightbackground=c['tip_border'], highlightthickness=1)
         tip.pack(fill='x', pady=(16, 4), **pad)
         tk.Label(tip, text='\U0001f4a1  Rule of thumb', font=('Segoe UI', 9, 'bold'),
-                 fg='#713f12', bg='#fefce8').pack(anchor='w')
+                 fg=c['tip_title'], bg=c['tip_bg']).pack(anchor='w')
         tk.Label(tip, text='Start at 8. If true duplicates are being MISSED, '
                            'raise it. If unrelated videos are being GROUPED, '
-                           'lower it.', font=('Segoe UI', 9), fg='#854d0e',
-                 bg='#fefce8', wraplength=550, justify='left').pack(anchor='w')
+                           'lower it.', font=('Segoe UI', 9), fg=c['tip_text'],
+                 bg=c['tip_bg'], wraplength=550, justify='left').pack(anchor='w')
 
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.grab_set()
@@ -254,8 +288,115 @@ class App(tk.Tk):
         self.decisions = {}         # path -> 'keep' | 'delete' | 'move'
         self._scan_thread = None
         self.privacy = self._load_privacy()
+        self.theme_name = self._load_theme_name()
+        self.theme = THEMES[self.theme_name]
         self.protocol('WM_DELETE_WINDOW', self._on_close)
+        self._apply_theme()
         self._build_ui()
+
+    # ------------------------------------------------------------- theme
+    def _load_settings_full(self):
+        cfg = os.path.join(APP_DIR, 'settings.json')
+        if os.path.isfile(cfg):
+            try:
+                with open(cfg) as fh:
+                    return json.load(fh)
+            except Exception:
+                pass
+        return {}
+
+    def _load_theme_name(self):
+        s = self._load_settings_full()
+        t = s.get('theme')
+        return t if t in THEMES else 'light'
+
+    def _save_theme(self):
+        cfg = os.path.join(APP_DIR, 'settings.json')
+        data = self._load_settings_full()
+        data['theme'] = self.theme_name
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(cfg, 'w') as fh:
+            json.dump(data, fh)
+
+    def toggle_theme(self):
+        self.set_theme('light' if self.theme_name == 'dark' else 'dark')
+
+    def set_theme(self, name):
+        if name not in THEMES or name == self.theme_name:
+            return
+        self.theme_name = name
+        self.theme = THEMES[name]
+        self._save_theme()
+        self._apply_theme()
+        btn = getattr(self, 'theme_btn', None)
+        if btn is not None:
+            btn.config(text='🌙 Dark mode' if name == 'light'
+                       else '☀️ Light mode')
+        self.update_idletasks()
+
+    def _apply_theme(self):
+        """(Re)paint every themed surface: ttk styles + classic tk widgets."""
+        c = THEMES[self.theme_name]
+        self.configure(bg=c['bg'])
+        style = ttk.Style(self)
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass  # keep whatever theme the platform provides
+        style.configure('.', background=c['card'], foreground=c['fg'],
+                        fieldbackground=c['card'], bordercolor=c['border'],
+                        lightcolor=c['card'], darkcolor=c['card2'],
+                        troughcolor=c['card2'])
+        style.configure('TFrame', background=c['bg'])
+        style.configure('TLabel', background=c['bg'], foreground=c['fg'])
+        style.configure('TLabelframe', background=c['bg'],
+                        foreground=c['fg'])
+        style.configure('TLabelframe.Label', background=c['bg'],
+                        foreground=c['fg'])
+        style.configure('TNotebook', background=c['bg'],
+                        bordercolor=c['border'])
+        style.configure('TNotebook.Tab', background=c['card2'],
+                        foreground=c['tab_fg'], padding=(14, 6))
+        style.map('TNotebook.Tab',
+                  background=[('selected', c['select'])],
+                  foreground=[('selected', c['select_fg'])])
+        style.configure('TButton', background=c['card2'],
+                        foreground=c['fg'], bordercolor=c['border'])
+        style.map('TButton', background=[('active', c['hover'])])
+        style.configure('TCheckbutton', background=c['bg'],
+                        foreground=c['fg'], focuscolor=c['accent'])
+        style.map('TCheckbutton', background=[('active', c['hover'])])
+        style.configure('TRadiobutton', background=c['bg'],
+                        foreground=c['fg'], focuscolor=c['accent'])
+        style.map('TRadiobutton', background=[('active', c['hover'])])
+        style.configure('TEntry', fieldbackground=c['card'],
+                        foreground=c['fg'], insertbackground=c['fg'])
+        style.configure('TProgressbar', background=c['accent'],
+                        troughcolor=c['card2'], bordercolor=c['bg'])
+        style.configure('Vertical.TScrollbar', background=c['card2'],
+                        troughcolor=c['bg'], bordercolor=c['bg'],
+                        arrowcolor=c['muted'])
+        style.configure('Horizontal.TScrollbar', background=c['card2'],
+                        troughcolor=c['bg'], bordercolor=c['bg'],
+                        arrowcolor=c['muted'])
+
+        # classic (non-ttk) widgets created in _build_ui
+        for attr, kind in (('log', 'text'), ('folder_list', 'listbox'),
+                           ('detail_canvas', 'canvas')):
+            w = getattr(self, attr, None)
+            if w is None:
+                continue  # not built yet (first apply) — builders use palette
+            if kind == 'listbox':
+                w.configure(bg=c['card'], fg=c['fg'],
+                            selectbackground=c['select'],
+                            selectforeground=c['select_fg'],
+                            highlightbackground=c['border'],
+                            highlightcolor=c['accent'])
+            elif kind == 'text':
+                w.configure(bg=c['card'], fg=c['fg'],
+                            insertbackground=c['fg'])
+            else:
+                w.configure(bg=c['bg'], highlightbackground=c['border'])
 
     def _on_close(self):
         if self.privacy.get('wipe_db_on_exit'):
@@ -292,10 +433,12 @@ class App(tk.Tk):
             json.dump(vals, fh)
 
     def open_privacy_settings(self):
+        c = self.theme
         win = tk.Toplevel(self)
         win.title('Privacy settings')
         win.transient(self)
         win.grab_set()
+        win.configure(bg=c['bg'])
         frm = ttk.Frame(win, padding=14)
         frm.pack(fill='both', expand=True)
         ttk.Label(frm, text='All options are OFF by default. Settings persist.',).grid(
@@ -325,7 +468,7 @@ class App(tk.Tk):
             vars_[key] = var
             ttk.Checkbutton(frm, text=label, variable=var).grid(
                 row=r, column=0, columnspan=2, sticky='w')
-            ttk.Label(frm, text=desc, foreground='gray40', wraplength=460,
+            ttk.Label(frm, text=desc, foreground=c['muted'], wraplength=460,
                       justify='left').grid(row=r + 1, column=0, columnspan=2,
                                            sticky='w', padx=(28, 0), pady=(0, 8))
 
@@ -360,7 +503,13 @@ class App(tk.Tk):
 
         row = ttk.Frame(f); row.pack(fill='x', **pad)
         ttk.Label(row, text='Folders to scan: (Ctrl/Shift-click to select multiple; Delete key removes)').pack(anchor='w')
-        self.folder_list = tk.Listbox(row, height=5, selectmode='extended')
+        c = self.theme
+        self.folder_list = tk.Listbox(row, height=5, selectmode='extended',
+                                      bg=c['card'], fg=c['fg'],
+                                      selectbackground=c['select'],
+                                      selectforeground=c['select_fg'],
+                                      highlightbackground=c['border'],
+                                      highlightcolor=c['accent'])
         self.folder_list.pack(fill='x', side='top')
         self.folder_list.bind('<Delete>', lambda e: self.remove_folder())
         self.folder_list.bind('<BackSpace>', lambda e: self.remove_folder())
@@ -423,12 +572,19 @@ class App(tk.Tk):
                    command=self.reset_library).pack(side='right')
         ttk.Button(run, text='Privacy settings…',
                    command=self.open_privacy_settings).pack(side='right', padx=6)
+        self.theme_btn = ttk.Button(
+            run, text='🌙 Dark mode' if self.theme_name == 'light'
+            else '☀️ Light mode',
+            command=self.toggle_theme)
+        self.theme_btn.pack(side='right', padx=6)
 
         self.progress = ttk.Progressbar(f, mode='determinate')
         self.progress.pack(fill='x', **pad)
         self.status_var = tk.StringVar(value='Ready. Add folders, then Start scan.')
         ttk.Label(f, textvariable=self.status_var).pack(anchor='w', **pad)
-        self.log = tk.Text(f, height=10, state='disabled')
+        c = self.theme
+        self.log = tk.Text(f, height=10, state='disabled', bg=c['card'],
+                           fg=c['fg'], insertbackground=c['fg'])
         self.log.pack(fill='both', expand=True, **pad)
 
         # restore saved folders
@@ -458,8 +614,11 @@ class App(tk.Tk):
 
     def _save_settings(self):
         os.makedirs(APP_DIR, exist_ok=True)
+        # preserve other keys (e.g. 'theme') written elsewhere
+        data = self._load_settings_full()
+        data['folders'] = list(self.folder_list.get(0, 'end'))
         with open(os.path.join(APP_DIR, 'settings.json'), 'w') as fh:
-            json.dump({'folders': list(self.folder_list.get(0, 'end'))}, fh)
+            json.dump(data, fh)
 
     def log_line(self, s):
         self.log.config(state='normal')
@@ -676,7 +835,8 @@ class App(tk.Tk):
                    command=self._keep_best_current_group).pack(anchor='w', pady=2)
         canvas_frame = ttk.Frame(right)
         canvas_frame.pack(fill='both', expand=True)
-        self.detail_canvas = tk.Canvas(canvas_frame, highlightthickness=0)
+        self.detail_canvas = tk.Canvas(canvas_frame, highlightthickness=0,
+                                       bg=self.theme['bg'])
         dsb = ttk.Scrollbar(canvas_frame, orient='vertical', command=self.detail_canvas.yview)
         self.detail_inner = ttk.Frame(self.detail_canvas)
         self.detail_inner.bind('<Configure>',
