@@ -65,6 +65,147 @@ If unrelated videos are being GROUPED, lower it.
 """
 
 
+class _SensitivityHelpDialog(tk.Toplevel):
+    """Professional structured help dialog: sections + color-coded level table."""
+
+    LEVELS = [
+        ('4',  'Very strict',   '#16a34a',
+         'Only catches re-encodes that are visually almost identical to the '
+         'original (high-bitrate copies, container changes like mp4\u2192mkv). '
+         'Misses heavily degraded copies. Essentially zero false matches.'),
+        ('6',  'Strict',        '#65a30d',
+         'Catches most re-encodes, including modest resolution changes. Very '
+         'few false matches. Good if you have clean rips of the same source.'),
+        ('8',  'Default',       '#0284c7',
+         'Balanced. Catches re-encodes, resolution drops, and moderate quality '
+         'loss. Occasional false matches between visually similar videos of '
+         'the same length (e.g. different episodes with identical intros).'),
+        ('10', 'Loose',         '#d97706',
+         'Catches heavily compressed or resized copies. More false matches — '
+         'expect to un-mark some suggested pairs by hand.'),
+        ('12+', 'Very loose',   '#dc2626',
+         'Groups anything vaguely similar with similar length. High false-match '
+         'rate; only useful for maximum disk savings if you review every group.'),
+    ]
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title('How perceptual match sensitivity works')
+        self.transient(master)
+        self.geometry('640x640')
+        self.minsize(560, 480)
+        bg = self._bg = '#f8fafc'
+        self.configure(bg=bg)
+
+        # ---- header band -------------------------------------------------
+        head = tk.Frame(self, bg='#0f172a', padx=20, pady=14)
+        head.pack(fill='x')
+        tk.Label(head, text='Perceptual Match Sensitivity',
+                 font=('Segoe UI', 15, 'bold'), fg='#ffffff', bg='#0f172a'
+                 ).pack(anchor='w')
+        tk.Label(head,
+                 text='How strictly videos must look alike to be grouped as duplicates',
+                 font=('Segoe UI', 9), fg='#94a3b8', bg='#0f172a'
+                 ).pack(anchor='w')
+
+        # ---- footer button (packed FIRST so it keeps its strip at the bottom)
+        foot = tk.Frame(self, bg='#f1f5f9', pady=10)
+        foot.pack(fill='x', side='bottom')
+        ok = ttk.Button(foot, text='Got it', command=self.destroy)
+        ok.pack(padx=20)
+        self.bind('<Return>', lambda e: self.destroy())
+        self.bind('<Escape>', lambda e: self.destroy())
+
+        # ---- scrollable body --------------------------------------------
+        outer = tk.Frame(self, bg=bg)
+        outer.pack(fill='both', expand=True)
+        canvas = tk.Canvas(outer, bg=bg, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        body = tk.Frame(canvas, bg=bg)
+        body.bind('<Configure>',
+                  lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        win = canvas.create_window((0, 0), window=body, anchor='nw', width=600)
+        # keep body width in sync when the dialog is resized
+        canvas.bind('<Configure>',
+                    lambda e: canvas.itemconfigure(win, width=e.width))
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        vsb.pack(side='right', fill='y')
+        # mouse-wheel scrolling
+        canvas.bind_all('<MouseWheel>', lambda e: canvas.yview_scroll(
+            -int(e.delta / 120), 'units'))
+        self._wheel_canvas = canvas  # unbind on close
+
+        pad = dict(padx=20)
+
+        def section(title):
+            f = tk.Frame(body, bg=bg)
+            f.pack(fill='x', pady=(18, 4), **pad)
+            tk.Label(f, text=title.upper(), font=('Segoe UI', 9, 'bold'),
+                     fg='#334155', bg=bg).pack(anchor='w')
+
+        def para(text, wl=550):
+            tk.Label(body, text=text, font=('Segoe UI', 10), fg='#1e293b',
+                     bg=bg, wraplength=wl, justify='left'
+                     ).pack(anchor='w', pady=2, **pad)
+
+        section('How it works')
+        para('VidSweep samples 4 frames from each video (at 10%, 35%, 60% and '
+             '85% of its runtime) and reduces each frame to a 64-bit '
+             '\u201cfingerprint\u201d of its visual structure. Two frames match '
+             'if their fingerprints differ by at most N bits — and N is exactly '
+             'what this slider sets.')
+        para('At any slider setting, at least 3 of the 4 frames must match, so '
+             'a single noisy frame (fade-in, black frame) won\u2019t break a '
+             'true match.')
+
+        section('The slider does NOT change')
+        para('\u2022  Duration check — videos must also be within 10% of the '
+             'same length.\n'
+             '\u2022  Exact duplicates — byte-identical files are always '
+             'grouped regardless of this setting.')
+
+        section('Level-by-level guide')
+        for value, name, color, desc in self.LEVELS:
+            row = tk.Frame(body, bg='#ffffff', padx=12, pady=10,
+                           highlightbackground='#e2e8f0', highlightthickness=1)
+            row.pack(fill='x', pady=(0, 2), **pad)
+            badge = tk.Label(row, text=value, font=('Consolas', 11, 'bold'),
+                             fg='#ffffff', bg=color, width=4, pady=4)
+            badge.pack(side='left', anchor='n', padx=(0, 12))
+            right = tk.Frame(row, bg='#ffffff')
+            right.pack(side='left', fill='x', expand=True)
+            tk.Label(right, text=name, font=('Segoe UI', 10, 'bold'),
+                     fg='#0f172a', bg='#ffffff'
+                     ).pack(anchor='w')
+            tk.Label(right, text=desc, font=('Segoe UI', 9), fg='#475569',
+                     bg='#ffffff', wraplength=480, justify='left'
+                     ).pack(anchor='w')
+
+        # rule of thumb callout
+        tip = tk.Frame(body, bg='#fefce8', padx=12, pady=10,
+                       highlightbackground='#fde047', highlightthickness=1)
+        tip.pack(fill='x', pady=(16, 4), **pad)
+        tk.Label(tip, text='\U0001f4a1  Rule of thumb', font=('Segoe UI', 9, 'bold'),
+                 fg='#713f12', bg='#fefce8').pack(anchor='w')
+        tk.Label(tip, text='Start at 8. If true duplicates are being MISSED, '
+                           'raise it. If unrelated videos are being GROUPED, '
+                           'lower it.', font=('Segoe UI', 9), fg='#854d0e',
+                 bg='#fefce8', wraplength=550, justify='left').pack(anchor='w')
+
+        self.protocol('WM_DELETE_WINDOW', self._on_close)
+        self.grab_set()
+        self.focus_set()
+
+    def _on_close(self):
+        try:
+            # stop intercepting mouse wheel app-wide
+            self._wheel_canvas.unbind_all('<MouseWheel>')
+        except Exception:
+            pass
+        self.destroy()
+
+
 class ThumbnailCache:
     """Loads JPEG blobs from db, decodes to PhotoImage at fixed size."""
 
@@ -372,7 +513,7 @@ class App(tk.Tk):
             self.status_var.set('Scan PAUSED — click Resume to continue. (In-flight videos finish first.)')
 
     def show_sensitivity_help(self):
-        messagebox.showinfo('How perceptual match sensitivity works', SENSITIVITY_HELP_TEXT)
+        _SensitivityHelpDialog(self)
 
     def reset_library(self):
         if self._scan_thread and self._scan_thread.is_alive():
