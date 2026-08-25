@@ -509,7 +509,12 @@ class VideoOrganizer:
             'FROM files WHERE sha256 IS NOT NULL').fetchall()
         recs = []
         for path, size, sha, phash, dur, w, h, vc in rows:
-            hashes = json.loads(phash) if phash else []
+            try:
+                hashes = json.loads(phash) if phash else []
+            except ValueError:
+                hashes = []  # malformed JSON (e.g. interrupted write): skip
+            if not isinstance(hashes, list):
+                hashes = []
             recs.append({'path': path, 'size': size, 'sha': sha,
                          'hashes': hashes, 'duration': dur,
                          'width': w, 'height': h, 'vcodec': vc})
@@ -547,9 +552,17 @@ class VideoOrganizer:
         # --- perceptual matching
         if use_perceptual and HAVE_IMAGEHASH:
             # Decode frame hashes once; _similarity works on the packed bits
-            # (numpy path) or ImageHash objects (fallback).
+            # (numpy path) or ImageHash objects (fallback). A cancelled scan
+            # can leave phash = '[]' (empty list) or malformed JSON — treat
+            # both as unfingerprinted and exclude from matching.
             for r in recs:
-                ihs = [imagehash.hex_to_hash(h) for h in r['hashes']]
+                hash_strs = r.get('hashes') or []
+                if not hash_strs:
+                    continue  # no usable frames: exclude from matching
+                try:
+                    ihs = [imagehash.hex_to_hash(h) for h in hash_strs]
+                except (ValueError, TypeError):
+                    continue  # malformed hash string: exclude, don't crash
                 r['_ih'] = ihs  # kept for the no-numpy fallback in _similarity
                 if _have_numpy:
                     import numpy as np
