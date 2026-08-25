@@ -78,4 +78,13 @@ cache) on Ubuntu, Windows and macOS across Python 3.11/3.12 on every push.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+VidSweep is free software licensed under **GPL-3.0** — see
+[LICENSE](LICENSE).
+
+- **Personal, academic, and open-source use:** free, no restrictions beyond
+  GPL's share-alike terms.
+- **Commercial use:** free *if* your product is also GPL-licensed open
+  source. If you want to build on VidSweep in a proprietary/closed-source
+  product, a **commercial license is available** — contact the maintainer.
+- This dual-licensing applies going forward; the project's author retains
+  full copyright and may offer alternative licensing arrangements.
