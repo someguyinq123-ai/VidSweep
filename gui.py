@@ -399,6 +399,15 @@ class App(tk.Tk):
                 w.configure(bg=c['bg'], highlightbackground=c['border'])
 
     def _on_close(self):
+        # A running scan holds the DB open; wiping/closing under it would
+        # crash the worker and risk a half-written database.
+        if self._scan_thread and self._scan_thread.is_alive():
+            if not messagebox.askyesno(
+                    'VidSweep',
+                    'A scan is still running.\n\nCancel it and exit?'):
+                return
+            self.org.cancel()
+            self._scan_thread.join(timeout=10)
         if self.privacy.get('wipe_db_on_exit'):
             try:
                 self.org.close()
@@ -914,15 +923,17 @@ class App(tk.Tk):
         for i, r in enumerate(g):
             row = ttk.Frame(self.detail_inner)
             row.pack(fill='x', pady=4, padx=4)
-            lbl = ttk.Label(row, image=self.thumbs.get(r['path']))
-            lbl.image = None
+            img = self.thumbs.get(r['path'])
+            lbl = ttk.Label(row, image=img)
+            lbl.image = img  # keep alive even if the LRU cache evicts it
             lbl.pack(side='left')
             info = ttk.Frame(row)
             info.pack(side='left', fill='x', expand=True, padx=8)
             name = r['path']
             ttk.Label(info, text=name, wraplength=520).pack(anchor='w')
             dur = f"{int(r['duration']//60)}:{int(r['duration']%60):02d}" if r['duration'] else '?'
-            br = (r['size'] / r['duration']) if r.get('duration') else 0
+            # bytes/sec * 8 = bits/sec; label honestly in megabits
+            br = (r['size'] / r['duration']) * 8 if r.get('duration') else 0
             br_str = f"{br/1e6:.2f} Mbps" if br else '?'
             ttk.Label(info, text=(
                 f"{r['width']}x{r['height']}  {r['size']/1e6:,.1f} MB  {br_str}  {dur}  "
@@ -1046,8 +1057,14 @@ class App(tk.Tk):
             return
         # transparent confirmation: list EVERY file, since marking accumulates across groups
         lines = []
+        secure = self.privacy.get('secure_delete')
         if to_delete:
-            lines.append(f"DELETE {len(to_delete)} file(s) ({self.action_var.get()}):")
+            if secure:
+                # honest label: secure delete overrides the dropdown entirely
+                lines.append(f"DELETE {len(to_delete)} file(s) — SECURE DELETE "
+                             "(permanent overwrite; Recycle Bin is bypassed):")
+            else:
+                lines.append(f"DELETE {len(to_delete)} file(s) ({self.action_var.get()}):")
             lines += [f'  ✗ {p}' for p in to_delete[:15]]
             if len(to_delete) > 15:
                 lines.append(f'  … and {len(to_delete) - 15} more')
@@ -1152,11 +1169,15 @@ class App(tk.Tk):
         if not os.path.isdir(src):
             messagebox.showwarning('VidSweep', 'Pick a valid source folder.')
             return
-        paths = [r[0] for r in self.org.db.execute(
+        src_norm = os.path.normcase(os.path.abspath(src))
+        all_paths = [r[0] for r in self.org.db.execute(
             'SELECT path FROM files')]
+        # only DB rows actually inside the chosen source folder (normalized
+        # compare: case/separator-insensitive on Windows)
+        paths = [p for p in all_paths
+                 if os.path.normcase(os.path.abspath(p)).startswith(src_norm + os.sep)]
         # fall back to disk listing if db is empty for this folder
-        if not paths or not any(p.startswith(os.path.normcase(src)) for p in paths):
-            paths = []
+        if not paths:
             for dirpath, _dirs, files in os.walk(src):
                 for fn in files:
                     if os.path.splitext(fn)[1].lower() in core.VIDEO_EXTS:

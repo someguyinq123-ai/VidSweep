@@ -216,13 +216,24 @@ class VideoOrganizer:
         return h.hexdigest()
 
     def _run_tracked(self, cmd, timeout, **kw):
-        """Run a subprocess registered for kill-on-cancel."""
+        """Run a subprocess registered for kill-on-cancel.
+
+        On timeout the process is killed (not left orphaned) and
+        TimeoutExpired re-raised.
+        """
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, **kw)
         with self._procs_lock:
             self._procs.add(proc)
         try:
             out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            raise
         finally:
             with self._procs_lock:
                 self._procs.discard(proc)
@@ -241,6 +252,8 @@ class VideoOrganizer:
                 timeout=30, text=True,
                 creationflags=_NO_WINDOW)
             info = json.loads(out.stdout or '{}')
+        except Cancelled:
+            raise  # never swallow cancellation inside broad error handling
         except Exception:
             return {}
         dur = None
@@ -254,7 +267,7 @@ class VideoOrganizer:
             num, _, den = str(vs['r_frame_rate']).partition('/')
             try:
                 fps = float(num) / float(den or 1)
-            except ZeroDivisionError:
+            except (ValueError, ZeroDivisionError):
                 fps = None
         return {'duration': dur,
                 'width': vs.get('width'),
@@ -302,6 +315,8 @@ class VideoOrganizer:
                         pass
             except subprocess.TimeoutExpired:
                 pass
+            except Cancelled:
+                raise  # propagate cancellation out of frame extraction
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
         return frames
@@ -345,8 +360,11 @@ class VideoOrganizer:
                  'skipped_cached': 0, 'errors': 0, 'reused_identical': 0}
 
         cur = self.db.cursor()
+        # require phash too: a row with sha but NULL phash means perceptual
+        # fingerprinting failed last time (ffprobe/ffmpeg error) — reprocess
+        # it instead of skipping it forever.
         known = {os.path.normcase(r[0]): r for r in cur.execute(
-            'SELECT path,size,mtime,sha256 FROM files')}
+            'SELECT path,size,mtime,sha256,phash FROM files')}
 
         to_process = []
         for p in paths:
@@ -356,8 +374,9 @@ class VideoOrganizer:
                 continue
             k = os.path.normcase(p)
             rec = known.get(k)
-            # skip only if unchanged AND fully fingerprinted (has sha)
-            if rec and rec[3] and rec[1] == st.st_size and abs(rec[2] - st.st_mtime) < 1:
+            # skip only if unchanged AND fully fingerprinted (sha + phash)
+            if rec and rec[3] and rec[4] is not None \
+                    and rec[1] == st.st_size and abs(rec[2] - st.st_mtime) < 1:
                 stats['skipped_cached'] += 1
                 continue
             to_process.append((p, st.st_size, st.st_mtime))
