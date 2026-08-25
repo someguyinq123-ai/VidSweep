@@ -85,6 +85,7 @@ VidSweep is free software licensed under **GPL-3.0** — see
   GPL's share-alike terms.
 - **Commercial use:** free *if* your product is also GPL-licensed open
   source. If you want to build on VidSweep in a proprietary/closed-source
-  product, a **commercial license is available** — contact the maintainer.
+  product, a **commercial license is available** — contact
+  **someguyinq123@gmail.com**.
 - This dual-licensing applies going forward; the project's author retains
   full copyright and may offer alternative licensing arrangements.
