@@ -11,11 +11,8 @@ Built for big libraries — designed and tested around 30,000+ files.
 ## Screenshots
 
 **Review duplicates side by side — the sharp 720p (5.08 Mbps) is
-auto-suggested Keep over the blurry "1080p" (0.50 Mbps):**
-
-![Duplicate review with best-quality pick](docs/screenshots/4_group_detail_best_quality.png)
-
-**One click marks every inferior copy across ALL groups:**
+auto-suggested Keep over the blurry "1080p" (0.50 Mbps)
+One click marks every inferior copy across ALL groups:**
 
 ![Mark all keep-best](docs/screenshots/5_marked_all.png)
 
