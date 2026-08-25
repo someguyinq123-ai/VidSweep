@@ -8,6 +8,29 @@ side with thumbnails, and categorizes what remains by name.
 
 Built for big libraries — designed and tested around 30,000+ files.
 
+## Screenshots
+
+**Review duplicates side by side — the sharp 720p (5.08 Mbps) is
+auto-suggested Keep over the blurry "1080p" (0.50 Mbps):**
+
+![Duplicate review with best-quality pick](docs/screenshots/4_group_detail_best_quality.png)
+
+**One click marks every inferior copy across ALL groups:**
+
+![Mark all keep-best](docs/screenshots/5_marked_all.png)
+
+**Live scan progress with pause and fast cancel:**
+
+![Scanning](docs/screenshots/2_scan_progress.png)
+
+**Privacy-first: every option is opt-in and OFF by default:**
+
+![Privacy settings](docs/screenshots/6_privacy_settings.png)
+
+**Dark mode included:**
+
+![Dark mode](docs/screenshots/7_dark_mode.png)
+
 ## Why VidSweep
 
 - **Finds re-encodes, not just copies.** Byte-identical files are the easy
