@@ -27,9 +27,6 @@ auto-suggested Keep over the blurry "1080p" (0.50 Mbps):**
 
 ![Privacy settings](docs/screenshots/6_privacy_settings.png)
 
-**Dark mode included:**
-
-![Dark mode](docs/screenshots/7_dark_mode.png)
 
 ## Why VidSweep
 
