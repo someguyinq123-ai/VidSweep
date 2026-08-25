@@ -32,7 +32,7 @@ THEMES = {
         'bg': '#f8fafc', 'fg': '#1e293b', 'muted': '#64748b',
         'card': '#ffffff', 'card2': '#f1f5f9', 'hover': '#e2e8f0',
         'border': '#cbd5e1', 'select': '#dbeafe', 'select_fg': '#1e293b',
-        'accent': '#2563eb', 'tab_fg': '#ffffff',
+        'accent': '#2563eb', 'tab_fg': '#334155',
         'head_bg': '#0f172a', 'head_fg': '#ffffff', 'head_sub': '#94a3b8',
         'foot_bg': '#f1f5f9',
         'section_fg': '#334155', 'para_fg': '#1e293b',
@@ -727,30 +727,35 @@ class App(tk.Tk):
         messagebox.showinfo('VidSweep', 'Library deleted and recreated empty.')
 
     def _scan_worker(self, folders, recursive):
+        def post(fn):
+            """Run fn on the main thread; fall back to direct call when no
+            Tk main loop is running (headless tests / scripted drivers)."""
+            try:
+                self.after(0, fn)
+            except (RuntimeError, tk.TclError):
+                try:
+                    fn()  # mainloop-less context: apply directly
+                except (RuntimeError, tk.TclError):
+                    pass  # window truly gone: drop the update
         def progress(phase, done, total, cur):
             pct = (done / total * 100) if total else 0
             try:
                 self.after(0, self._update_progress, phase, done, total, pct, cur)
             except (RuntimeError, tk.TclError):
-                pass  # window closed mid-scan: keep scanning, skip UI updates
+                try:
+                    self._update_progress(phase, done, total, pct, cur)
+                except (RuntimeError, tk.TclError):
+                    pass  # window closed mid-scan: keep scanning, skip UI
         try:
             stats = self.org.scan(folders, recursive=recursive, progress=progress)
         except core.Cancelled:
-            try:
-                self.after(0, lambda: self._scan_done(cancelled=True))
-            except (RuntimeError, tk.TclError):
-                pass
+            post(lambda: self._scan_done(cancelled=True))
             return
         except Exception as e:
-            try:
-                self.after(0, lambda: self._scan_done(error=str(e)))
-            except (RuntimeError, tk.TclError):
-                pass
+            err = str(e)
+            post(lambda: self._scan_done(error=err))
             return
-        try:
-            self.after(0, lambda: self._scan_done(stats=stats))
-        except (RuntimeError, tk.TclError):
-            pass
+        post(lambda: self._scan_done(stats=stats))
 
     def _update_progress(self, phase, done, total, pct, cur):
         labels = {'scan': 'Finding files', 'hashing': 'Exact hashing',
