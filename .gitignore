@@ -10,3 +10,4 @@ quarantine/
 ffmpeg_path.txt
 __pycache__/
 *.pyc
+.hermes.md
