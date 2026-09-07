@@ -18,6 +18,13 @@ for gi in range(8):
                    check=True, capture_output=True)
 print('videos built', flush=True)
 
+# ISOLATION: App() must never open the real library.db next to core.py
+_iso_dir = tempfile.mkdtemp(prefix='vs_db_')
+_iso_init = core.VideoOrganizer.__init__
+core.VideoOrganizer.__init__ = (
+    lambda self, db_path=None: _iso_init(
+    self, db_path=db_path or os.path.join(_iso_dir, 't.db')))
+
 app = gui.App()
 # ISOLATION: the App loads the user's real folders from settings.json — clear them
 app.folder_list.delete(0, 'end')

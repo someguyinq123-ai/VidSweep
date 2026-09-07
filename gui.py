@@ -6,6 +6,7 @@ Tabs:
   3. Organize  — name-based category suggestions, preview moves, apply
 """
 
+import csv
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -23,6 +25,109 @@ import io
 import core
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+# ---- multi-select folder picker --------------------------------------------
+def _pick_folders_win32(owner_hwnd):
+    """Native Windows folder picker with multi-select, via the COM
+    IFileOpenDialog (the same dialog Explorer uses, in folder mode).
+
+    Returns a list of folder paths, [] if the user cancelled, or None when
+    the COM dialog is unavailable or fails — the caller then falls back to
+    tkinter's single-folder chooser. Pure stdlib (ctypes), no pywin32.
+    """
+    import ctypes
+    from ctypes import POINTER, byref, cast, c_void_p, c_wchar_p
+    from ctypes import c_ulong, c_ushort, c_ubyte, c_uint32
+
+    class GUID(ctypes.Structure):
+        _fields_ = [('Data1', c_ulong), ('Data2', c_ushort),
+                    ('Data3', c_ushort), ('Data4', c_ubyte * 8)]
+
+    def make_guid(s):
+        p = s.strip('{}').split('-')
+        return GUID(int(p[0], 16), int(p[1], 16), int(p[2], 16),
+                    (c_ubyte * 8)(*bytes.fromhex(p[3] + p[4])))
+
+    CLSID_FileOpenDialog = make_guid('DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7')
+    IID_IFileOpenDialog = make_guid('D57C7288-D4AD-4768-BE02-9D969532D960')
+    SIGDN_FILESYSPATH = 0x80058000
+    # FOS_NOCHANGEDIR | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_ALLOWMULTISELECT
+    FOS_OPTIONS = 0x8 | 0x20 | 0x40 | 0x200
+    HR_CANCELLED = 0x800704C7  # HRESULT_FROM_WIN32(ERROR_CANCELLED)
+
+    ole32 = ctypes.oledll.ole32
+
+    def vtbl_method(obj, index, *argtypes, restype=ctypes.HRESULT):
+        """COM method at vtable slot `index` of an interface pointer.
+        The callable still expects the interface pointer as first arg."""
+        table_addr = cast(obj, POINTER(c_void_p)).contents.value
+        entry = cast(c_void_p(table_addr + index * ctypes.sizeof(c_void_p)),
+                     POINTER(c_void_p)).contents.value
+        return ctypes.WINFUNCTYPE(restype, *argtypes)(entry)
+
+    initialized = False
+    try:
+        try:
+            ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+            initialized = True
+        except OSError:
+            pass  # COM already initialized (possibly a different model) — usable
+
+        # the dialog owner must be a TOP-LEVEL window; Tk's winfo_id() returns
+        # an inner child, so walk up to the root ancestor
+        user32 = ctypes.windll.user32
+        top = user32.GetAncestor(owner_hwnd, 2)  # GA_ROOT
+        if top:
+            owner_hwnd = top
+
+        dlg = c_void_p()
+        ole32.CoCreateInstance(byref(CLSID_FileOpenDialog), None, 1,  # INPROC_SERVER
+                               byref(IID_IFileOpenDialog), byref(dlg))
+        # vtable: 0-2 IUnknown, 3 Show, 4-26 IFileDialog (9 SetOptions,
+        # 17 SetTitle), 27 GetResults (IFileOpenDialog)
+        vtbl_method(dlg, 9, c_void_p, c_uint32)(dlg, FOS_OPTIONS)
+        vtbl_method(dlg, 17, c_void_p, c_wchar_p)(
+            dlg, 'Choose one or more folders containing videos')
+        try:
+            hr = vtbl_method(dlg, 3, c_void_p, c_void_p)(dlg, owner_hwnd)
+        except OSError as e:
+            # oledll raises failed HRESULTs; a user cancel must return []
+            if getattr(e, 'winerror', 0) & 0xFFFFFFFF == HR_CANCELLED:
+                return []
+            return None
+        if hr != 0:
+            return None  # dialog failed — let the caller fall back
+
+        results = c_void_p()
+        vtbl_method(dlg, 27, c_void_p, POINTER(c_void_p))(dlg, byref(results))
+        count = c_uint32()
+        vtbl_method(results, 7, c_void_p, POINTER(c_uint32))(results, byref(count))
+        get_item_at = vtbl_method(results, 8, c_void_p, c_uint32, POINTER(c_void_p))
+
+        paths = []
+        for i in range(count.value):
+            item = c_void_p()
+            get_item_at(results, i, byref(item))
+            buf = c_void_p()
+            # 5 = IShellItem.GetDisplayName
+            vtbl_method(item, 5, c_void_p, c_uint32, POINTER(c_void_p))(
+                item, SIGDN_FILESYSPATH, byref(buf))
+            if buf:
+                paths.append(cast(buf, c_wchar_p).value)
+                ole32.CoTaskMemFree(buf)
+            vtbl_method(item, 2, c_void_p)(item)  # Release
+        vtbl_method(results, 2, c_void_p)(results)   # Release
+        vtbl_method(dlg, 2, c_void_p)(dlg)           # Release
+        return paths
+    except Exception:
+        return None
+    finally:
+        if initialized:
+            try:
+                ole32.CoUninitialize()
+            except Exception:
+                pass
 
 # ---- theme palettes ------------------------------------------------------
 # Every color used by custom-painted surfaces lives here; ttk styles and the
@@ -242,34 +347,73 @@ class _SensitivityHelpDialog(tk.Toplevel):
 
 
 class ThumbnailCache:
-    """Loads JPEG blobs from db, decodes to PhotoImage at fixed size."""
+    """Loads JPEG blobs from db, decodes to PhotoImage, LRU-cached per size."""
 
     def __init__(self, organizer, size=(160, 90), max_items=200):
         self.org = organizer
         self.size = size
-        self._cache = OrderedDict()  # path -> PhotoImage, LRU order (oldest first)
-        self._missing = None  # 1x1 gray
+        self._cache = OrderedDict()  # (path, height) -> PhotoImage, LRU order
+        self._missing = {}  # height -> gray placeholder
         self._max_items = max_items
 
-    def get(self, path):
-        if path in self._cache:
-            self._cache.move_to_end(path)  # mark most-recently-used
-            return self._cache[path]
-        blob = self.org.get_thumbnail(path)
-        img = None
-        if blob:
-            try:
-                pil = Image.open(io.BytesIO(blob))
-                pil.thumbnail(self.size)
-                img = ImageTk.PhotoImage(pil)
-            except Exception:
-                img = None
-        if img is None:
-            if self._missing is None:
-                self._missing = ImageTk.PhotoImage(
-                    Image.new('RGB', self.size, (60, 60, 60)))
-            img = self._missing
-        self._cache[path] = img
+    def get(self, path, height=None):
+        """Blocking one-shot: PhotoImage for `path` scaled to `height`
+        (decodes synchronously — prefer cached()/placeholder()/render_pil()/
+        store() so the UI thread never blocks on JPEG decodes)."""
+        h = int(height) if height else self.size[1]
+        img = self.cached(path, h)
+        if img is not None:
+            return img
+        return self.store(path, h, self.render_pil(path, h))
+
+    def cached(self, path, height):
+        key = (path, int(height))
+        if key in self._cache:
+            self._cache.move_to_end(key)  # mark most-recently-used
+            return self._cache[key]
+        return None
+
+    def placeholder(self, height):
+        """Gray 16:9 box shown while a thumbnail decodes off-thread."""
+        h = int(height)
+        ph = self._missing.get(h)
+        if ph is None:
+            ph = ImageTk.PhotoImage(
+                Image.new('RGB', (16 * h // 9, h), (60, 60, 60)))
+            self._missing[h] = ph
+        return ph
+
+    def render_pil(self, path, height):
+        """Decode + resize off the main thread. Returns PIL.Image or None.
+        Thread-safe: touches only the DB read and PIL, never Tk."""
+        try:
+            blob = self.org.get_thumbnail(path)  # internally _db_lock-protected
+        except Exception:
+            return None
+        if not blob:
+            return None
+        try:
+            pil = Image.open(io.BytesIO(blob))
+            pil.thumbnail((10000, int(height)))
+            return pil
+        except Exception:
+            return None
+
+    def store(self, path, height, pil):
+        """Create the PhotoImage on the main thread (Tk requirement) and
+        cache it. Returns None when there is nothing to show."""
+        if pil is None:
+            return None
+        key = (path, int(height))
+        img = self._cache.get(key)
+        if img is not None:
+            self._cache.move_to_end(key)
+            return img
+        try:
+            img = ImageTk.PhotoImage(pil)
+        except Exception:
+            return None
+        self._cache[key] = img
         while len(self._cache) > self._max_items:
             self._cache.popitem(last=False)  # evict least-recently-used
         return img
@@ -287,12 +431,18 @@ class App(tk.Tk):
         self.groups = []            # list of groups (lists of recs)
         self.decisions = {}         # path -> 'keep' | 'delete' | 'move'
         self._scan_thread = None
+        self.current_session_id = None  # scan batch shown on the Duplicates tab
+        self._thumb_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='thumb')
+        self._detail_gen = 0  # bumped per group selection; stale decodes dropped
         self.privacy = self._load_privacy()
         self.theme_name = self._load_theme_name()
         self.theme = THEMES[self.theme_name]
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self._apply_theme()
         self._build_ui()
+        # an unfinished (paused/stopped) scan must survive closing the app or
+        # rebooting the PC: offer to continue it shortly after launch
+        self.after(400, self._offer_resume_on_startup)
 
     # ------------------------------------------------------------- theme
     def _load_settings_full(self):
@@ -362,23 +512,65 @@ class App(tk.Tk):
                   foreground=[('selected', c['select_fg'])])
         style.configure('TButton', background=c['card2'],
                         foreground=c['fg'], bordercolor=c['border'])
-        style.map('TButton', background=[('active', c['hover'])])
+        style.map('TButton',
+                  background=[('active', c['hover']), ('pressed', c['accent']), ('disabled', c['card'])],
+                  foreground=[('active', c['fg']), ('pressed', c['fg']), ('disabled', c['muted'])])
         style.configure('TCheckbutton', background=c['bg'],
                         foreground=c['fg'], focuscolor=c['accent'])
-        style.map('TCheckbutton', background=[('active', c['hover'])])
+        style.map('TCheckbutton',
+                  background=[('active', c['hover']), ('pressed', c['hover']), ('disabled', c['bg'])],
+                  foreground=[('active', c['fg']), ('pressed', c['fg']), ('disabled', c['muted'])])
         style.configure('TRadiobutton', background=c['bg'],
                         foreground=c['fg'], focuscolor=c['accent'])
-        style.map('TRadiobutton', background=[('active', c['hover'])])
+        style.map('TRadiobutton',
+                  background=[('active', c['hover']), ('pressed', c['hover']), ('disabled', c['bg'])],
+                  foreground=[('active', c['fg']), ('pressed', c['fg']), ('disabled', c['muted'])])
         style.configure('TEntry', fieldbackground=c['card'],
                         foreground=c['fg'], insertbackground=c['fg'])
+        # Treeview (duplicate groups list): clam keeps a white field by
+        # default, which left palette text invisible — style it explicitly
+        style.configure('Treeview', background=c['card'],
+                        fieldbackground=c['card'], foreground=c['fg'],
+                        bordercolor=c['border'], lightcolor=c['card'],
+                        darkcolor=c['card'])
+        style.configure('Treeview.Heading', background=c['card2'],
+                        foreground=c['fg'], lightcolor=c['card2'],
+                        darkcolor=c['card2'], bordercolor=c['border'])
+        style.map('Treeview',
+                  background=[('selected', c['select'])],
+                  foreground=[('selected', c['select_fg'])])
+        style.map('Treeview.Heading', lightcolor=[('active', c['hover'])],
+                  darkcolor=[('active', c['hover'])])
+        # Combobox (delete/execute box): the closed, readonly field also kept
+        # clam's white background — map every state to the palette
+        style.configure('TCombobox', fieldbackground=c['card'],
+                        background=c['card2'], foreground=c['fg'],
+                        arrowcolor=c['fg'], insertbackground=c['fg'],
+                        bordercolor=c['border'], lightcolor=c['card'],
+                        darkcolor=c['card'])
+        style.map('TCombobox',
+                  fieldbackground=[('readonly', c['card']), ('disabled', c['bg'])],
+                  foreground=[('readonly', c['fg']), ('disabled', c['muted'])],
+                  selectbackground=[('readonly', c['card'])],
+                  selectforeground=[('readonly', c['fg'])])
+        # the dropdown list of every combobox (separate classic listbox)
+        self.option_add('*TCombobox*Listbox.background', c['card'])
+        self.option_add('*TCombobox*Listbox.foreground', c['fg'])
+        self.option_add('*TCombobox*Listbox.selectBackground', c['select'])
+        self.option_add('*TCombobox*Listbox.selectForeground', c['select_fg'])
         style.configure('TProgressbar', background=c['accent'],
                         troughcolor=c['card2'], bordercolor=c['bg'])
-        style.configure('Vertical.TScrollbar', background=c['card2'],
-                        troughcolor=c['bg'], bordercolor=c['bg'],
-                        arrowcolor=c['muted'])
-        style.configure('Horizontal.TScrollbar', background=c['card2'],
-                        troughcolor=c['bg'], bordercolor=c['bg'],
-                        arrowcolor=c['muted'])
+        # scrollbars: clam paints the trough with lightcolor/darkcolor
+        # gradients that ignore the palette and look like a pale stripe on
+        # dark mode — pin every element to theme colors for a flat look
+        for sb in ('Vertical.TScrollbar', 'Horizontal.TScrollbar'):
+            style.configure(sb, background=c['card2'], troughcolor=c['card'],
+                            bordercolor=c['border'], arrowcolor=c['fg'],
+                            lightcolor=c['card2'], darkcolor=c['card2'])
+            style.map(sb,
+                      background=[('active', c['hover']), ('pressed', c['select'])],
+                      lightcolor=[('active', c['hover'])],
+                      darkcolor=[('active', c['hover'])])
 
         # classic (non-ttk) widgets created in _build_ui
         for attr, kind in (('log', 'text'), ('folder_list', 'listbox'),
@@ -404,17 +596,36 @@ class App(tk.Tk):
         if self._scan_thread and self._scan_thread.is_alive():
             if not messagebox.askyesno(
                     'VidSweep',
-                    'A scan is still running.\n\nCancel it and exit?'):
+                    'A scan is still running.\n\n'
+                    'Its progress is saved — after you restart, VidSweep '
+                    'will offer to resume it.\n\n'
+                    'Stop it and exit now?'):
                 return
             self.org.cancel()
             self._scan_thread.join(timeout=10)
+        # Always close the DB connection so a relaunch doesn't hit
+        # "database is locked" from the previous process's unclosed handle.
+        try:
+            self.org.close()
+        except Exception:
+            pass
+        # Shut down the thumbnail worker pool so its non-daemon threads
+        # don't keep the process alive after the window closes.
+        try:
+            self._thumb_pool.shutdown(wait=False)
+        except Exception:
+            pass
         if self.privacy.get('wipe_db_on_exit'):
             try:
-                self.org.close()
                 for ext in ('', '-wal', '-shm'):
                     p = self.org.db_path + ext
                     if os.path.isfile(p):
                         os.remove(p)
+                # the sidecar remembers the unfinished scan — wiping the DB
+                # must wipe it too (privacy: nothing about the library stays)
+                sp = self.org.scan_state_path()
+                if os.path.isfile(sp):
+                    os.remove(sp)
             except Exception:
                 pass
         self.destroy()
@@ -467,9 +678,10 @@ class App(tk.Tk):
              'Slower for large files. Files bypass the Recycle Bin entirely.'),
             ('open_no_history',
              'Open videos without leaving history traces',
-             'The "Open" button launches your player with history/recents disabled\n'
-             '(MPC-HC private mode, VLC never saves recent list, etc.).\n'
-             'Also skips Windows Recent Items jump-list entries.'),
+             'The "Open" button (and clicking a thumbnail) launches MPC-HC with\n'
+             'history disabled when it is installed. If MPC-HC is not found,\n'
+             'your system default player opens the file instead (that player\'s\n'
+             'own history behavior then applies).'),
         ]
         for i, (key, label, desc) in enumerate(rows):
             r = i * 2 + 1  # +1: row 0 is the header line (was colliding before)
@@ -573,6 +785,8 @@ class App(tk.Tk):
         run = ttk.Frame(f); run.pack(fill='x', **pad)
         self.scan_btn = ttk.Button(run, text='Start scan', command=self.start_scan)
         self.scan_btn.pack(side='left')
+        self.resume_btn = ttk.Button(run, text='Resume last scan',
+                                     command=self.resume_scan)
         self.cancel_btn = ttk.Button(run, text='Cancel', command=self.cancel_scan, state='disabled')
         self.cancel_btn.pack(side='left', padx=6)
         self.pause_btn = ttk.Button(run, text='Pause', command=self.toggle_pause, state='disabled')
@@ -607,11 +821,125 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-    def add_folder(self):
-        d = filedialog.askdirectory(title='Choose folder containing videos')
-        if d:
-            self.folder_list.insert('end', os.path.normpath(d))
+        # an unfinished scan session (stopped mid-way) offers a one-click resume
+        self._refresh_resume_btn()
+
+    def _refresh_resume_btn(self):
+        """Show the Resume button only while an active scan session exists."""
+        try:
+            sess = self.org.get_last_session()
+        except Exception:
+            sess = None
+        if sess and sess.get('active') and sess.get('roots'):
+            self.current_session_id = sess['id']
+            total = sess.get('total') or 0
+            if sess.get('paused'):
+                label = (f"Resume paused scan "
+                         f"({sess['done']} of {total or '?'} videos)")
+            else:
+                label = f"Resume last scan ({sess['done']} files fingerprinted)"
+            self.resume_btn.config(text=label)
+            try:
+                self.resume_btn.pack(side='left', padx=6)
+            except tk.TclError:
+                pass
+        else:
+            try:
+                self.resume_btn.pack_forget()
+            except tk.TclError:
+                pass
+
+    def _offer_resume_on_startup(self):
+        """A paused/stopped scan must survive closing the app or a full PC
+        restart: shortly after launch, find the unfinished session and offer
+        to continue it in one click."""
+        try:
+            sess = self.org.get_last_session()
+        except Exception:
+            sess = None
+        if sess and sess.get('active') and sess.get('done'):
+            done, total = sess['done'], (sess.get('total') or 0)
+            state_txt = ('was PAUSED' if sess.get('paused')
+                         else 'was stopped unfinished')
+            preview = ', '.join(sess['roots'][:3])
+            if len(sess['roots']) > 3:
+                preview += f' … (+{len(sess["roots"]) - 3} more)'
+            if messagebox.askyesno(
+                    'VidSweep — resume scan?',
+                    f'An unfinished scan was found (it {state_txt}).\n\n'
+                    f'{done} of {total or "?"} videos fingerprinted so far.\n'
+                    f'Folders: {preview}\n\n'
+                    'Resume it now?'):
+                self.resume_scan()
+            else:
+                self.log_line(
+                    f'Unfinished scan kept: {done} of {total or "?"} files '
+                    'done. Click "Resume" on the Scan tab to continue it.')
+                self.status_var.set(
+                    'Unfinished scan found — use the Resume button to continue.')
+            return
+        # library.db sometimes comes back unreadable after a hard shutdown on
+        # the external-drive bridge (then gets recreated empty). The sidecar
+        # JSON still remembers the unfinished scan — offer a restart over the
+        # same folders so a long scan is never silently lost.
+        state = None
+        try:
+            p = self.org.scan_state_path()
+            if os.path.isfile(p):
+                with open(p) as fh:
+                    state = json.load(fh)
+        except Exception:
+            state = None
+        if not (state and state.get('status') == 'active' and state.get('done')):
+            return
+        roots = [r for r in (state.get('roots') or []) if os.path.isdir(r)]
+        if not roots:
+            return
+        if messagebox.askyesno(
+                'VidSweep — scan interrupted',
+                f"An unfinished scan ({state.get('done')} of "
+                f"{state.get('total') or '?'} videos fingerprinted) was "
+                'interrupted, and its fingerprint cache could not be '
+                'recovered.\n\n'
+                'Start the scan again over the same folders?\n'
+                + ', '.join(roots[:3])):
+            self.folder_list.delete(0, 'end')
+            for r in roots:
+                self.folder_list.insert('end', r)
+            self.recursive_var.set(bool(state.get('recursive', True)))
             self._save_settings()
+            self.start_scan()
+
+    def add_folder(self):
+        folders = self._pick_folders()
+        if not folders:
+            return
+        existing = {os.path.normcase(p)
+                    for p in self.folder_list.get(0, 'end')}
+        added = 0
+        for p in folders:
+            p = os.path.normpath(p)
+            if os.path.normcase(p) in existing:
+                continue  # already in the list — don't add twice
+            existing.add(os.path.normcase(p))
+            self.folder_list.insert('end', p)
+            added += 1
+        if added:
+            self._save_settings()
+            self.status_var.set(f'Added {added} folder(s).')
+        else:
+            messagebox.showinfo('VidSweep', 'That folder is already in the list.')
+
+    def _pick_folders(self):
+        """Multi-select folder chooser. Uses the native Windows dialog when
+        possible; falls back to tkinter's single-folder chooser elsewhere or
+        if the COM dialog is unavailable."""
+        if os.name == 'nt':
+            folders = _pick_folders_win32(self.winfo_id())
+            if folders is not None:
+                return folders
+        d = filedialog.askdirectory(title='Choose folder containing videos')
+        return [d] if d else []
 
     def remove_folder(self):
         # delete highest index first so lower indices stay valid during removal
@@ -626,6 +954,8 @@ class App(tk.Tk):
         # preserve other keys (e.g. 'theme') written elsewhere
         data = self._load_settings_full()
         data['folders'] = list(self.folder_list.get(0, 'end'))
+        if getattr(self, 'fast_var', None) is not None:
+            data['fast_match'] = bool(self.fast_var.get())
         with open(os.path.join(APP_DIR, 'settings.json'), 'w') as fh:
             json.dump(data, fh)
 
@@ -641,14 +971,44 @@ class App(tk.Tk):
             messagebox.showwarning('VidSweep', 'Add at least one folder first.')
             return
         self._save_settings()
+        self._launch_scan(folders, self.recursive_var.get())
+
+    def resume_scan(self):
+        """Continue the last stopped scan: same folders, same batch."""
+        try:
+            sess = self.org.get_last_session()
+        except Exception:
+            sess = None
+        if not sess or not sess.get('active'):
+            messagebox.showinfo('VidSweep', 'No unfinished scan to resume.')
+            self._refresh_resume_btn()
+            return
+        roots = [r for r in (sess.get('roots') or []) if os.path.isdir(r)]
+        if not roots:
+            messagebox.showwarning(
+                'VidSweep',
+                'The folders from the last scan no longer exist.\n'
+                'Start a new scan instead.')
+            return
+        # reflect the resumed session's folders in the UI
+        self.folder_list.delete(0, 'end')
+        for r in sess['roots']:
+            self.folder_list.insert('end', r)
+        self.recursive_var.set(sess['recursive'])
+        self._save_settings()
+        self._launch_scan(roots, sess['recursive'], session_id=sess['id'])
+
+    def _launch_scan(self, folders, recursive, session_id=None):
+        self.current_session_id = session_id  # None: set from stats when done
         self.scan_btn.config(state='disabled')
+        self.resume_btn.config(state='disabled')
         self.cancel_btn.config(state='normal')
         self.pause_btn.config(state='normal')
         self.progress.config(value=0)
         self.status_var.set('Scanning…')
         self._scan_thread = threading.Thread(
             target=self._scan_worker,
-            args=(folders, self.recursive_var.get()), daemon=True)
+            args=(folders, recursive, session_id), daemon=True)
         self._scan_thread.start()
 
     def cancel_scan(self):
@@ -710,12 +1070,18 @@ class App(tk.Tk):
                 p = db_path + ext
                 if os.path.isfile(p):
                     os.remove(p)
+            sp = self.org.scan_state_path()
+            if os.path.isfile(sp):
+                os.remove(sp)
         except Exception as e:
             messagebox.showerror('VidSweep', f'Could not delete database:\n{e}')
             return
         # rebuild a fresh, empty library
         self.org = core.VideoOrganizer(db_path=db_path)
         self.thumbs = ThumbnailCache(self.org)
+        self.groups = []
+        self.current_session_id = None
+        self._refresh_resume_btn()
         self.groups = []
         self.decisions.clear()
         for iid in self.group_tree.get_children():
@@ -726,7 +1092,7 @@ class App(tk.Tk):
         self.status_var.set('Library reset. Ready for a fresh scan.')
         messagebox.showinfo('VidSweep', 'Library deleted and recreated empty.')
 
-    def _scan_worker(self, folders, recursive):
+    def _scan_worker(self, folders, recursive, session_id=None):
         def post(fn):
             """Run fn on the main thread; fall back to direct call when no
             Tk main loop is running (headless tests / scripted drivers)."""
@@ -747,7 +1113,8 @@ class App(tk.Tk):
                 except (RuntimeError, tk.TclError):
                     pass  # window closed mid-scan: keep scanning, skip UI
         try:
-            stats = self.org.scan(folders, recursive=recursive, progress=progress)
+            stats = self.org.scan(folders, recursive=recursive,
+                                  progress=progress, session_id=session_id)
         except core.Cancelled:
             post(lambda: self._scan_done(cancelled=True))
             return
@@ -759,7 +1126,8 @@ class App(tk.Tk):
 
     def _update_progress(self, phase, done, total, pct, cur):
         labels = {'scan': 'Finding files', 'hashing': 'Exact hashing',
-                  'perceptual': 'Frames & perceptual hashes'}
+                  'perceptual': 'Frames & perceptual hashes',
+                  'working': 'Hashing + fingerprints'}
         try:
             self.progress.config(value=pct)
             now = time.monotonic()
@@ -787,14 +1155,38 @@ class App(tk.Tk):
             messagebox.showerror('VidSweep', f'Scan failed:\n{error}')
             return
         if cancelled:
-            self.status_var.set('Scan cancelled.')
-            self.log_line('Scan cancelled by user.')
+            # Everything fingerprinted before the stop is already committed;
+            # surface it immediately instead of waiting for a manual refresh.
+            done = 0
+            try:
+                done = self.org.get_last_session()['done']
+            except Exception:
+                pass
+            self.status_var.set(
+                f'Scan stopped — {done} videos fingerprinted so far. '
+                'Resume anytime from the Scan tab.')
+            self.log_line(
+                f'Scan stopped by user — {done} files fingerprinted; '
+                'partial batch loaded on the Duplicates tab.')
+            self._refresh_resume_btn()
+            if getattr(self, 'dupes_scope_var', None) is not None:
+                self.dupes_scope_var.set('batch')
+            self.load_groups()
             return
+        self.current_session_id = stats.get('session_id')
+        if stats.get('cache_migrated'):
+            self.log_line(
+                'The library cache kept getting corrupted on its old drive '
+                f'and has moved to: {stats["cache_migrated"]}\n'
+                'Future scans use the new location automatically.')
         self.status_var.set(
             f"Done in {stats['elapsed']}s — {stats['scanned']} videos found, "
             f"{stats['processed']} processed, {stats['skipped_cached']} cached, "
+            f"{stats.get('reused_identical', 0)} reused from identical files, "
+            f"{stats.get('pruned', 0)} stale entries cleaned, "
             f"{stats['errors']} errors.")
         self.log_line(f"Scan complete: {stats}")
+        self._refresh_resume_btn()
         self.load_groups()
 
     # --- Duplicates tab
@@ -806,6 +1198,22 @@ class App(tk.Tk):
         self.refresh_btn.pack(side='left')
         self.dupe_summary = ttk.Label(top, text='')
         self.dupe_summary.pack(side='left', padx=12)
+        # scope: match only the current scan batch (partial scans, resume) or
+        # everything ever fingerprinted. Defaults to batch when a stopped scan
+        # session exists.
+        ttk.Label(top, text='Match:').pack(side='left', padx=(12, 2))
+        self.dupes_scope_var = tk.StringVar(
+            value='batch' if getattr(self, 'current_session_id', None) else 'library')
+        ttk.Radiobutton(top, text='Current scan batch', value='batch',
+                        variable=self.dupes_scope_var).pack(side='left')
+        ttk.Radiobutton(top, text='Entire library', value='library',
+                        variable=self.dupes_scope_var).pack(side='left', padx=(2, 6))
+        # banding-based candidate generation: near-instant matching on huge
+        # libraries; off = the exact exhaustive comparison (slower at scale)
+        self.fast_var = tk.BooleanVar(value=bool(
+            self._load_settings_full().get('fast_match', True)))
+        ttk.Checkbutton(top, text='Fast match (large libraries)',
+                        variable=self.fast_var).pack(side='left')
 
         # --- action bar: delete/keep right here, at the top where it's obvious
         action = ttk.LabelFrame(f, text=' Act on marked files ', padding=(8, 4))
@@ -822,6 +1230,8 @@ class App(tk.Tk):
         apply_btn.pack(side='left', padx=10)
         ttk.Button(action, text='Mark ALL groups: keep best, delete rest',
                    command=self.mark_all_keep_best).pack(side='left', padx=4)
+        ttk.Button(action, text='Keep ALL groups: mark all as keep',
+                   command=self.mark_all_keep_all).pack(side='left', padx=4)
         self.marked_label = ttk.Label(action, text='0 marked for deletion')
         self.marked_label.pack(side='left', padx=10)
 
@@ -855,26 +1265,56 @@ class App(tk.Tk):
         self.detail_inner = ttk.Frame(self.detail_canvas)
         self.detail_inner.bind('<Configure>',
             lambda e: self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox('all')))
-        self.detail_canvas.create_window((0, 0), window=self.detail_inner, anchor='nw')
+        self._detail_window = self.detail_canvas.create_window(
+            (0, 0), window=self.detail_inner, anchor='nw')
+        # keep the inner frame exactly as wide as the canvas: content always
+        # spans the pane and the scroll range matches the real content height
+        self.detail_canvas.bind('<Configure>', self._on_detail_configure)
         self.detail_canvas.configure(yscrollcommand=dsb.set)
         self.detail_canvas.pack(side='left', fill='both', expand=True)
         dsb.pack(side='right', fill='y')
-        self.detail_canvas.bind_all('<MouseWheel>',
-            lambda e: self.detail_canvas.yview_scroll(-1 * (e.delta // 120), 'units'))
+        # wheel scrolls ONLY the detail pane (bound per-widget below), never
+        # via bind_all — a global binding made every wheel tick anywhere in
+        # the app scroll this box
+        self.detail_canvas.bind('<MouseWheel>', self._on_detail_wheel)
         paned.add(right, weight=3)
+        # keyboard triage: active only on this tab (gated in _on_review_key)
+        self._detail_rows = []
+        self._detail_index = -1
+        for seq in ('<Key-k>', '<Key-d>', '<Key-m>',
+                    '<Key-K>', '<Key-D>', '<Key-M>',
+                    '<Return>', '<Up>', '<Down>', '<Left>', '<Right>'):
+            self.bind(seq, self._on_review_key)
 
     def load_groups(self):
         # Run the CPU-bound comparison in a background thread so the UI
         # stays responsive; results are applied back on the main thread.
         self.refresh_btn.config(state='disabled')
+        # read tk variables on the main thread ONLY — touching Tcl state from
+        # the worker thread can kill the interpreter (silent exit(1))
+        threshold = self.sens_var.get()
+        fast = True
+        if getattr(self, 'fast_var', None) is not None:
+            fast = bool(self.fast_var.get())
+        scope = getattr(self, 'dupes_scope_var', None)
+        batch = scope is not None and scope.get() == 'batch'
+        session_id = self.current_session_id if batch else None
+        # an id of None means "no batch selected yet" — fall back to the
+        # whole library so the tab is never silently empty
+        self._load_scope_txt = ('current scan batch' if session_id is not None
+                                else 'entire library')
         self.status_var.set('Loading duplicate groups…')
-        threshold = self.sens_var.get()  # read tk variable on main thread only
         self.update_idletasks()
         self._load_result = None  # set by worker, consumed by _poll_load_result
+        self._load_progress = None  # live (done, total) from the match loop
 
         def _worker():
+            def lprog(phase, done, total, cur):
+                self._load_progress = (done, total)
             try:
-                groups = self.org.find_duplicates(threshold=threshold)
+                groups = self.org.find_duplicates(
+                    threshold=threshold, session_id=session_id,
+                    fast_match=fast, progress=lprog)
                 self._load_result = (groups, None)
             except Exception as e:
                 self._load_result = (None, str(e))
@@ -885,6 +1325,9 @@ class App(tk.Tk):
     def _poll_load_result(self):
         res = getattr(self, '_load_result', None)
         if res is None:
+            lp = getattr(self, '_load_progress', None)
+            if lp:
+                self.status_var.set(f'Matching duplicates… {lp[0]}/{lp[1]}')
             try:
                 self.after(50, self._poll_load_result)
             except (RuntimeError, tk.TclError):
@@ -907,10 +1350,31 @@ class App(tk.Tk):
             self.group_tree.insert('', 'end', iid=str(gi),
                 values=(f'Group {gi+1} ({len(g)} files)', f'{waste/1e6:,.1f}'))
         self.dupe_summary.config(
-            text=f'{len(self.groups)} duplicate groups — {total_waste/1e9:.2f} GB redundant')
+            text=f'{len(self.groups)} duplicate groups — '
+                 f'{total_waste/1e9:.2f} GB redundant '
+                 f'[{getattr(self, "_load_scope_txt", "entire library")}]')
         self.decisions.clear()
         self.status_var.set(f'Loaded {len(self.groups)} duplicate groups.')
         self._update_marked_count()  # decisions were just cleared
+
+    def _detail_thumb_height(self, n_files):
+        """Thumbnail height sized to the group: few files -> big thumbnails,
+        many files -> smaller ones so more rows fit before scrolling starts.
+        Heights are quantized to steps so re-renders reuse the cache and
+        window resizes produce visible jumps instead of 1px changes. Above
+        144 the stored 256x144 frames are upscaled for display only (nothing
+        extra is stored) — big but slightly soft beyond that point."""
+        pane_h = self.detail_canvas.winfo_height()
+        if pane_h <= 1:
+            pane_h = 500  # not laid out yet (headless / first render)
+        # ~90px of text+controls per row plus padding; whatever is left of
+        # the pane is the thumbnail.
+        fit_h = int((pane_h - 90) / max(1, n_files)) - 10
+        h = 54
+        for step in (54, 66, 80, 96, 116, 144, 180, 240):
+            if step <= fit_h:
+                h = step
+        return h
 
     def _on_group_selected(self, _evt):
         sel = self.group_tree.selection()
@@ -925,13 +1389,33 @@ class App(tk.Tk):
             f"Group {gi+1}: {len(g)} files. Best copy (auto-suggested keep): "
             f"{os.path.basename(best['path'])}  [{best['width']}x{best['height']}, "
             f"{best['size']/1e6:,.1f} MB, {best['vcodec']}]"))
+        thumb_h = self._detail_thumb_height(len(g))
+        self._detail_thumb_rendered = thumb_h
+        # decode thumbnails off the UI thread: rows appear instantly with a
+        # gray placeholder, images pop in as they finish. A generation counter
+        # drops results for a group the user has already clicked away from.
+        self._detail_gen += 1
+        gen = self._detail_gen
+        rows = []
         for i, r in enumerate(g):
             row = ttk.Frame(self.detail_inner)
             row.pack(fill='x', pady=4, padx=4)
-            img = self.thumbs.get(r['path'])
-            lbl = ttk.Label(row, image=img)
+            marker = ttk.Label(row, text='', foreground=self.theme['accent'])
+            marker.pack(side='left')
+            img = self.thumbs.cached(r['path'], thumb_h)
+            needs_decode = img is None
+            if needs_decode:
+                img = self.thumbs.placeholder(thumb_h)
+            lbl = ttk.Label(row, image=img, cursor='hand2')
             lbl.image = img  # keep alive even if the LRU cache evicts it
             lbl.pack(side='left')
+            # clicking the thumbnail opens the video, same as the Open button
+            lbl.bind('<Button-1>',
+                     lambda e, p=r['path']: self._open_file(p))
+            if needs_decode:
+                self._thumb_pool.submit(self._decode_thumb, r['path'],
+                                        thumb_h, gen, lbl)
+            rows.append((row, marker, r['path']))
             info = ttk.Frame(row)
             info.pack(side='left', fill='x', expand=True, padx=8)
             name = r['path']
@@ -957,17 +1441,153 @@ class App(tk.Tk):
                        command=lambda p=r['path']: self._open_file(p)).pack(side='left', padx=6)
             if i == 0:
                 ttk.Label(rbf, text='← suggested keep (best quality)').pack(side='left', padx=6)
+        # wheel binding must cover the freshly built rows (each rebuild
+        # replaces the children); scrollregion + view follow the new content
+        self._bind_wheel_recursive(self.detail_inner)
+        self.detail_inner.update_idletasks()
+        self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox('all'))
+        self.detail_canvas.yview_moveto(0)  # every group starts at the top
+        self._detail_rows = rows
+        self._set_detail_index(0 if rows else -1)  # keyboard cursor at top
         self._update_marked_count()  # refresh count when revisiting a group
+
+    def _set_detail_index(self, i):
+        """Move the keyboard cursor (▶ marker) to file i, keeping it visible."""
+        self._detail_index = i
+        for idx, (row, marker, _path) in enumerate(self._detail_rows):
+            marker.config(text='▶' if idx == i else '')
+        if not (0 <= i < len(self._detail_rows)):
+            return
+        row = self._detail_rows[i][0]
+        try:
+            # winfo_y is relative to detail_inner = canvas content coordinates
+            y = row.winfo_y()
+            h = row.winfo_height()
+            view_h = self.detail_canvas.winfo_height() or 1
+            if h <= 1 or h >= view_h:
+                return  # not laid out yet, or row taller than the pane
+            if y < 0:  # above the viewport — scroll up to it
+                box = self.detail_canvas.bbox('all')
+                content_h = max(1, (box[3] - box[1]) if box else 1)
+                self.detail_canvas.yview_moveto(max(0.0, y / content_h))
+            elif y + h > view_h:  # below — scroll down to it
+                box = self.detail_canvas.bbox('all')
+                content_h = max(1, (box[3] - box[1]) if box else 1)
+                frac = (y + h - view_h) / content_h
+                self.detail_canvas.yview_moveto(min(1.0, max(0.0, frac)))
+        except (RuntimeError, tk.TclError):
+            pass  # window gone / not laid out yet
+
+    def _review_keys_active(self):
+        """Keyboard review keys only act on the Duplicates tab and never
+        while typing in a text field (quarantine path box etc.)."""
+        try:
+            if self.nb.select() != str(self.tab_dupes):
+                return False
+            w = self.focus_get()
+        except (RuntimeError, tk.TclError):
+            return False
+        return not isinstance(w, (tk.Entry, ttk.Entry, ttk.Combobox, tk.Text))
+
+    def _on_review_key(self, e):
+        if not self._review_keys_active():
+            return
+        key = e.keysym.lower()
+        if key in ('up', 'down'):
+            if self.focus_get() is self.group_tree:
+                return  # tree has focus: its own Up/Down walks the groups
+            if self._detail_rows:
+                step = 1 if key == 'down' else -1
+                self._set_detail_index(max(0, min(len(self._detail_rows) - 1,
+                                                  self._detail_index + step)))
+            return 'break'
+        if key in ('left', 'right'):
+            sel = self.group_tree.selection()
+            if sel and self.groups:
+                gi = int(sel[0]) + (1 if key == 'right' else -1)
+                if 0 <= gi < len(self.groups):
+                    self.group_tree.selection_set(str(gi))
+            return 'break'
+        if key == 'return':
+            if 0 <= self._detail_index < len(self._detail_rows):
+                self._open_file(self._detail_rows[self._detail_index][2])
+            return 'break'
+        if key in ('k', 'd', 'm') and self._detail_rows:
+            i = self._detail_index
+            if 0 <= i < len(self._detail_rows):
+                _row, _marker, path = self._detail_rows[i]
+                v = self.decisions.get(path)
+                if v is not None:
+                    v.set({'k': 'keep', 'd': 'delete', 'm': 'move'}[key])
+                if i + 1 < len(self._detail_rows):
+                    self._set_detail_index(i + 1)  # triage: auto-advance
+            return 'break'
+
+    def _bind_wheel_recursive(self, w):
+        w.bind('<MouseWheel>', self._on_detail_wheel)
+        for c in w.winfo_children():
+            self._bind_wheel_recursive(c)
+
+    def _decode_thumb(self, path, height, gen, lbl):
+        """Worker (thumbnail pool): decode + resize away from the UI thread,
+        then hand the PIL image back to the main loop."""
+        pil = self.thumbs.render_pil(path, height)
+        try:
+            self.after(0, lambda: self._apply_thumb(path, height, gen, lbl, pil))
+        except (RuntimeError, tk.TclError):
+            pass  # window gone mid-decode: drop the result
+
+    def _apply_thumb(self, path, height, gen, lbl, pil):
+        if gen != self._detail_gen:
+            return  # user already selected a different group
+        try:
+            if not lbl.winfo_exists():
+                return  # rows were rebuilt since this decode started
+        except (RuntimeError, tk.TclError):
+            return
+        img = self.thumbs.store(path, height, pil)
+        if img is None:
+            return  # no thumbnail for this file; placeholder stays
+        lbl.configure(image=img)
+        lbl.image = img
+
+    def _on_detail_configure(self, e):
+        # content always spans the pane width...
+        self.detail_canvas.itemconfigure(self._detail_window, width=e.width)
+        # ...and thumbnails re-adapt to the new pane height — debounced so
+        # dragging the window border doesn't rebuild rows on every pixel
+        if getattr(self, '_resize_job', None):
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        self._resize_job = self.after(180, self._maybe_rerender_detail)
+
+    def _maybe_rerender_detail(self):
+        self._resize_job = None
+        sel = self.group_tree.selection()
+        if not sel or not getattr(self, 'groups', None):
+            return
+        g = self.groups[int(sel[0])]
+        if self._detail_thumb_height(len(g)) != getattr(
+                self, '_detail_thumb_rendered', None):
+            self._on_group_selected(None)
+
+    def _on_detail_wheel(self, e):
+        # scroll only while the content actually overflows the pane; when it
+        # fits, the view is pinned and the wheel is a no-op (no dead space)
+        if self.detail_canvas.yview() == (0.0, 1.0):
+            return
+        self.detail_canvas.yview_scroll(-1 * (e.delta // 120), 'units')
 
     def _open_file(self, path):
         if self.privacy.get('open_no_history'):
             from shutil import which
-            # VLC: --no-qt-recentplay stops it saving a recent-files list.
             # MPC-HC: launched directly (no Windows Recent Items entry);
             # disable "Keep history" in its own options for full privacy.
+            # If MPC-HC isn't installed we fall through to the OS default
+            # handler — we never second-guess the user's default player.
             candidates = [
-                ('vlc.exe', ['--no-qt-recentplay'],
-                 (r'C:\Program Files\VideoLAN\VLC',)),
                 ('mpc-hc64.exe', [],
                  (r'C:\Program Files\MPC-HC', r'C:\Program Files (x86)\MPC-HC')),
                 ('mpc-hc.exe', [],
@@ -987,6 +1607,11 @@ class App(tk.Tk):
                         return
                     except Exception:
                         pass
+            # No MPC-HC installed: open with the SYSTEM DEFAULT player rather
+            # than hijacking the click to VLC. (Recent-items traces may apply,
+            # but the user's default choice wins over player guessing.)
+        # Fall back to the OS default handler (whatever the user registered —
+        # e.g. MPC-HC — via Windows file association).
         try:
             os.startfile(path)  # noqa
         except Exception:
@@ -1014,6 +1639,27 @@ class App(tk.Tk):
                             f'Marked {n} files for deletion across ALL {len(self.groups)} groups '
                             '(best copy kept per group).\n'
                             'Review if you like, then click EXECUTE.')
+
+    def mark_all_keep_all(self):
+        """Mark every file in every group as 'keep' — zero deletions."""
+        if not self.groups:
+            messagebox.showinfo('VidSweep', 'No groups loaded — scan first.')
+            return
+        total_files = 0
+        for g in self.groups:
+            for i, r in enumerate(g):
+                v = self.decisions.get(r['path'])
+                if v is None:
+                    v = tk.StringVar(value='keep')
+                    v.trace_add('write', lambda *a: self._update_marked_count())
+                    self.decisions[r['path']] = v
+                else:
+                    v.set('keep')
+                total_files += 1
+        self._update_marked_count()
+        messagebox.showinfo('VidSweep',
+                            f'All {total_files} files across ALL {len(self.groups)} groups '
+                            'marked KEEP. No files will be deleted.')
 
     def _keep_best_current_group(self):
         sel = self.group_tree.selection()
@@ -1054,6 +1700,40 @@ class App(tk.Tk):
             os.fsync(f.fileno())
         os.remove(path)
 
+    def _write_action_log(self, rows, path=None):
+        """Local audit trail for EXECUTE/Organize actions, under logs/ in the
+        app folder — nothing leaves the machine. Written BEFORE the
+        operations run (status 'planned', so a crash mid-execute still
+        leaves a record of what was about to happen), then rewritten with
+        the real per-file outcomes afterwards."""
+        if path is None:
+            log_dir = os.path.join(APP_DIR, 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            path = os.path.join(log_dir,
+                                time.strftime('actions_%Y%m%d-%H%M%S.csv'))
+            # rapid back-to-back actions share the second: never clobber
+            n = 1
+            while os.path.exists(path):
+                path = os.path.join(log_dir, time.strftime(
+                    f'actions_%Y%m%d-%H%M%S_{n}.csv'))
+                n += 1
+        stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        with open(path, 'w', newline='', encoding='utf-8') as fh:
+            w = csv.writer(fh)
+            w.writerow(['timestamp', 'action', 'path', 'size',
+                        'destination', 'status'])
+            for action, p, size, dest, status in rows:
+                w.writerow([stamp, action, p, size, dest, status])
+        return path
+
+    def _manifest_row(self, action, p):
+        """One planned row for the action log; size is best-effort."""
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            size = '?'
+        return [action, p, size, '', 'planned']
+
     def apply_decisions(self):
         to_delete = [p for p, v in self.decisions.items() if v.get() == 'delete']
         to_move = [p for p, v in self.decisions.items() if v.get() == 'move']
@@ -1085,6 +1765,10 @@ class App(tk.Tk):
         msg = '\n'.join(lines)
         if not messagebox.askyesno('Confirm — review this list carefully', msg):
             return
+        # audit trail: planned actions hit disk before anything is touched
+        manifest = ([self._manifest_row('delete', p) for p in to_delete]
+                    + [self._manifest_row('move', p) for p in to_move])
+        log_path = self._write_action_log(manifest)
         moved = deleted = failed = 0
         if self.action_var.get() == 'Recycle Bin':
             try:
@@ -1092,7 +1776,7 @@ class App(tk.Tk):
             except ImportError:
                 messagebox.showerror('VidSweep', 'send2trash not installed. Run: pip install send2trash')
                 return
-        for p in to_delete:
+        for i, p in enumerate(to_delete):
             try:
                 mode = self.action_var.get()
                 if mode == 'Recycle Bin' and not self.privacy.get('secure_delete'):
@@ -1108,20 +1792,27 @@ class App(tk.Tk):
                         dest = os.path.join(q, f'{base}_{k}{ext}')
                         k += 1
                     shutil.move(p, dest)
+                    manifest[i][3] = dest
                 else:
                     # secure delete (privacy setting) or Delete permanently
                     if self.privacy.get('secure_delete'):
                         self._secure_delete(p)
                     else:
                         os.remove(p)
-                self.org.db.execute('DELETE FROM files WHERE path=?', (p,))
+                with self.org._db_lock:
+                    self.org.db.execute('DELETE FROM files WHERE path=?', (p,))
+                    self.org.db.commit()
                 deleted += 1
+                manifest[i][4] = 'deleted'
             except Exception as e:
                 failed += 1
+                manifest[i][4] = f'failed: {e}'
                 self.log_line(f'FAILED {p}: {e}')
-        for p in to_move:
+        for j, p in enumerate(to_move):
+            mi = len(to_delete) + j
             dest_dir = filedialog.askdirectory(title=f'Choose destination for {os.path.basename(p)}')
             if not dest_dir:
+                manifest[mi][4] = 'skipped (no destination chosen)'
                 continue
             try:
                 base, ext = os.path.splitext(os.path.basename(p))
@@ -1132,16 +1823,26 @@ class App(tk.Tk):
                     dest = os.path.join(dest_dir, f'{base}_{k}{ext}')
                     k += 1
                 shutil.move(p, dest)
-                self.org.db.execute('UPDATE files SET path=? WHERE path=?',
-                                    (dest, p))
-                self.org.db.commit()
+                # update the DB only after the move succeeded; if this raises,
+                # the file is safely at `dest` but the row still points at `p`,
+                # so a later scan re-discovers it rather than losing track.
+                with self.org._db_lock:
+                    self.org.db.execute('UPDATE files SET path=? WHERE path=?',
+                                        (dest, p))
+                    self.org.db.commit()
                 moved += 1
+                manifest[mi][3] = dest
+                manifest[mi][4] = 'moved'
             except Exception as e:
                 failed += 1
+                manifest[mi][4] = f'failed: {e}'
                 self.log_line(f'FAILED move {p}: {e}')
         self.org.db.commit()
+        self._write_action_log(manifest, log_path)  # rewrite with outcomes
+        self.log_line(f'Action log: {log_path}')
         messagebox.showinfo('VidSweep',
-                            f'Deleted: {deleted}, moved: {moved}, failed: {failed}')
+                            f'Deleted: {deleted}, moved: {moved}, failed: {failed}\n\n'
+                            f'Log: {log_path}')
         self.load_groups()
 
     # --- Organize tab
@@ -1175,8 +1876,9 @@ class App(tk.Tk):
             messagebox.showwarning('VidSweep', 'Pick a valid source folder.')
             return
         src_norm = os.path.normcase(os.path.abspath(src))
-        all_paths = [r[0] for r in self.org.db.execute(
-            'SELECT path FROM files')]
+        with self.org._db_lock:
+            all_paths = [r[0] for r in self.org.db.execute(
+                'SELECT path FROM files')]
         # only DB rows actually inside the chosen source folder (normalized
         # compare: case/separator-insensitive on Windows)
         paths = [p for p in all_paths
@@ -1214,8 +1916,10 @@ class App(tk.Tk):
     def apply_moves(self):
         if not messagebox.askyesno('Confirm', f'Move {len(self.org_moves)} files into category folders?'):
             return
+        manifest = [self._manifest_row('move', p) for p, _cat, _dest in self.org_moves]
+        log_path = self._write_action_log(manifest)
         done = failed = 0
-        for p, _cat, dest in self.org_moves:
+        for i, (p, _cat, dest) in enumerate(self.org_moves):
             try:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 if os.path.exists(dest):
@@ -1225,19 +1929,72 @@ class App(tk.Tk):
                         dest = f'{base}_{k}{ext}'
                         k += 1
                 shutil.move(p, dest)
-                self.org.db.execute('UPDATE files SET path=? WHERE path=?', (dest, p))
+                # update the DB only after the move succeeded; if this raises,
+                # the file is safely at `dest` but the row still points at `p`,
+                # so a later scan re-discovers it rather than losing track.
+                with self.org._db_lock:
+                    self.org.db.execute('UPDATE files SET path=? WHERE path=?', (dest, p))
                 done += 1
+                manifest[i][3] = dest
+                manifest[i][4] = 'moved'
             except Exception as e:
                 failed += 1
+                manifest[i][4] = f'failed: {e}'
                 self.log_line(f'FAILED {p}: {e}')
-        self.org.db.commit()
-        messagebox.showinfo('VidSweep', f'Moved {done}, failed {failed}.')
+        with self.org._db_lock:
+            self.org.db.commit()
+        self._write_action_log(manifest, log_path)
+        self.log_line(f'Action log: {log_path}')
+        messagebox.showinfo('VidSweep', f'Moved {done}, failed {failed}.\nLog: {log_path}')
         self.org_apply_btn.config(state='disabled')
+
+
+def _acquire_single_instance_lock():
+    """Windows named mutex: only one VidSweep may run at a time.
+
+    The second launch exits immediately instead of piling up a second
+    instance (three copies of the app were observed eating all RAM and
+    crashing the PC — each instance opened the same library.db and could
+    start its own scan). The mutex is kernel-held: if the process crashes
+    or is killed, the OS releases it automatically, so no stale lock.
+    Returns the mutex handle (keep it referenced for the app's lifetime)
+    or None on non-Windows / when the mutex already exists.
+    """
+    if os.name != 'nt':
+        return None
+    import ctypes
+    from ctypes import wintypes
+    ERROR_ALREADY_EXISTS = 183
+    # 'Global\' namespace: visible across sessions, same as most apps
+    name = 'Global\\VidSweep_SingleInstance'
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        return None  # couldn't create — don't block startup on this
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False  # another instance is running
+    return handle
 
 
 def main():
     try:
+        lock = _acquire_single_instance_lock()
+        if lock is False:
+            # already running: bring the existing window forward instead
+            # of spawning a second copy
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    'VidSweep is already running.\n\n'
+                    'Check your taskbar / system tray for the open window.',
+                    'VidSweep', 0x40)  # MB_ICONINFORMATION
+            except Exception:
+                pass
+            return
         app = App()
+        app._instance_lock = lock  # keep the handle alive for app lifetime
         app.mainloop()
     except Exception:
         import logging

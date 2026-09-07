@@ -11,6 +11,10 @@ for fn in ('showinfo', 'showwarning', 'showerror', 'askyesno'):
 
 tmpdb = os.path.join(tempfile.mkdtemp(prefix='vs_helpdlg_'), 't.db')
 
+# ISOLATION: App() must never open the real library.db next to core.py
+_iso_init = core.VideoOrganizer.__init__
+core.VideoOrganizer.__init__ = (
+    lambda self, db_path=None: _iso_init(self, db_path=tmpdb))
 app = gui.App()
 app.folder_list.delete(0, 'end')          # isolate from real settings.json
 app.org = core.VideoOrganizer(db_path=tmpdb)

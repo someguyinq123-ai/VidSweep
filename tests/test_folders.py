@@ -1,5 +1,5 @@
 """Regression: multi-select folder removal (button + Delete key) + settings persistence."""
-import gui, os, tempfile, shutil
+import gui, core, os, tempfile, shutil
 
 gui.messagebox.showinfo = lambda *a, **k: None
 gui.messagebox.askyesno = lambda *a, **k: True
@@ -8,6 +8,12 @@ gui.messagebox.showwarning = lambda *a, **k: None
 tmp = tempfile.mkdtemp(prefix='vs_folders_')
 # keep the app's settings.json away from the real one during the test
 import unittest.mock as mock
+# ISOLATION: App() must never open the real library.db next to core.py
+_iso_dir = tempfile.mkdtemp(prefix='vs_db_')
+_iso_init = core.VideoOrganizer.__init__
+core.VideoOrganizer.__init__ = (
+    lambda self, db_path=None: _iso_init(
+    self, db_path=db_path or os.path.join(_iso_dir, 't.db')))
 with mock.patch.object(gui, 'APP_DIR', tmp):
     app = gui.App()
     app.update()

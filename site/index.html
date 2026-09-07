@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VidSweep — Find duplicate videos, even re-encodes. Privately.</title>
+<meta name="description" content="A portable, privacy-first desktop app that finds duplicate videos — even re-encoded copies — across 30,000+ file libraries. Nothing leaves your machine." />
+<meta property="og:title" content="VidSweep — Find duplicate videos, even re-encodes." />
+<meta property="og:description" content="Privacy-first desktop dedup for big video libraries. Perceptual hashing, side-by-side review, zero network calls." />
+<meta property="og:image" content="screenshots/4_group_detail_best_quality.png" />
+<link rel="icon" type="image/svg+xml" href="logo.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* ----- design tokens ----- */
+  :root {
+    --bg:           #fafaf7;
+    --surface:      #ffffff;
+    --ink:          #0b0f17;
+    --ink-2:        #2a3340;
+    --muted:        #5b6472;
+    --hair:         #e6e3da;
+    --hair-strong:  #d4d0c4;
+    --accent:       #0ea5e9;   /* sky, from logo */
+    --accent-ink:   #075985;
+    --amber:        #d97706;   /* sweep */
+    --ok:           #15803d;
+    --code-bg:      #0f141b;
+    --code-ink:     #e6e3da;
+    --radius:       10px;
+    --radius-lg:    16px;
+    --maxw:         1180px;
+    --shadow-1:     0 1px 2px rgba(11,15,23,.04), 0 1px 1px rgba(11,15,23,.03);
+    --shadow-2:     0 12px 40px -16px rgba(11,15,23,.18), 0 2px 6px rgba(11,15,23,.04);
+    --font-sans:    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono:    "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:          #0b0f17;
+      --surface:     #11161f;
+      --ink:         #e9edf3;
+      --ink-2:       #b9c1ce;
+      --muted:       #818a99;
+      --hair:        #1c2230;
+      --hair-strong: #28303f;
+      --accent:      #38bdf8;
+      --accent-ink:  #7dd3fc;
+      --code-bg:     #06090f;
+      --code-ink:    #d6dbe4;
+      --shadow-1:    0 1px 2px rgba(0,0,0,.4);
+      --shadow-2:    0 24px 60px -24px rgba(0,0,0,.7), 0 2px 6px rgba(0,0,0,.3);
+    }
+  }
+
+  *,*::before,*::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01","cv11";
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a { color: inherit; text-decoration: none; }
+  img { max-width: 100%; display: block; }
+  ::selection { background: var(--accent); color: white; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
+
+  /* ----- top nav ----- */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: saturate(140%) blur(10px);
+    -webkit-backdrop-filter: saturate(140%) blur(10px);
+    background: color-mix(in oklab, var(--bg) 78%, transparent);
+    border-bottom: 1px solid var(--hair);
+  }
+  .nav-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 60px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+  .brand-mark { width: 26px; height: 26px; }
+  .nav-links { display: flex; gap: 6px; align-items: center; font-size: 14px; color: var(--muted); }
+  .nav-links a { padding: 6px 10px; border-radius: 6px; }
+  .nav-links a:hover { color: var(--ink); background: color-mix(in oklab, var(--ink) 5%, transparent); }
+  .nav-cta {
+    background: var(--ink); color: var(--bg);
+    padding: 8px 14px; border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    transition: transform .15s ease;
+  }
+  .nav-cta:hover { transform: translateY(-1px); }
+
+  /* ----- hero ----- */
+  .hero {
+    padding: 96px 0 64px;
+    border-bottom: 1px solid var(--hair);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse 700px 280px at 12% 0%, color-mix(in oklab, var(--accent) 14%, transparent), transparent 60%),
+      radial-gradient(ellipse 500px 240px at 88% 30%, color-mix(in oklab, var(--amber) 10%, transparent), transparent 60%);
+    pointer-events: none;
+  }
+  .hero-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1.05fr 1fr;
+    gap: 64px;
+    align-items: center;
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--hair-strong);
+    background: color-mix(in oklab, var(--surface) 70%, transparent);
+    font-size: 12px; font-weight: 500; color: var(--ink-2);
+    letter-spacing: .02em;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px color-mix(in oklab, var(--ok) 20%, transparent); }
+  h1 {
+    font-size: clamp(40px, 5.4vw, 64px);
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    font-weight: 600;
+    margin: 18px 0 18px;
+  }
+  h1 em {
+    font-style: normal;
+    background: linear-gradient(180deg, transparent 62%, color-mix(in oklab, var(--accent) 32%, transparent) 62%);
+    padding: 0 4px;
+  }
+  .lede {
+    font-size: 18px; line-height: 1.6;
+    color: var(--ink-2);
+    max-width: 52ch;
+  }
+  .cta-row { display: flex; gap: 12px; align-items: center; margin-top: 30px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 18px; border-radius: 10px;
+    font-weight: 500; font-size: 14px;
+    border: 1px solid transparent;
+    transition: transform .15s ease, background .15s ease, border-color .15s ease;
+    cursor: pointer;
+  }
+  .btn-primary { background: var(--ink); color: var(--bg); }
+  .btn-primary:hover { transform: translateY(-1px); }
+  .btn-ghost { background: transparent; color: var(--ink); border-color: var(--hair-strong); }
+  .btn-ghost:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+  .meta-row {
+    display: flex; gap: 22px; margin-top: 36px; flex-wrap: wrap;
+    color: var(--muted); font-size: 13px;
+  }
+  .meta-row strong { color: var(--ink); font-weight: 600; }
+
+  /* mock app window on the right */
+  .mock {
+    position: relative;
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    border: 1px solid var(--hair-strong);
+    box-shadow: var(--shadow-2);
+    overflow: hidden;
+  }
+  .mock-titlebar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--hair);
+    font-size: 12px; color: var(--muted);
+    background: color-mix(in oklab, var(--surface) 70%, var(--bg));
+  }
+  .mock-titlebar .dots { display: flex; gap: 6px; }
+  .mock-titlebar .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--hair-strong); }
+  .mock-titlebar .title { margin-left: 8px; font-weight: 500; color: var(--ink-2); }
+  .mock-body { padding: 14px; display: grid; gap: 12px; }
+  .mock-row {
+    display: grid; grid-template-columns: 64px 1fr auto;
+    gap: 12px; align-items: center;
+    padding: 10px; border-radius: 8px;
+    border: 1px solid var(--hair);
+  }
+  .thumb {
+    width: 64px; height: 40px; border-radius: 5px;
+    background:
+      linear-gradient(135deg, #1e293b, #334155),
+      repeating-linear-gradient(90deg, transparent 0 14px, rgba(255,255,255,.05) 14px 15px);
+    position: relative; overflow: hidden;
+  }
+  .thumb::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, transparent 50%, rgba(0,0,0,.35));
+  }
+  .thumb.a { background: linear-gradient(135deg, #0c4a6e, #0369a1); }
+  .thumb.b { background: linear-gradient(135deg, #78350f, #b45309); }
+  .thumb.c { background: linear-gradient(135deg, #14532d, #166534); }
+  .mock-name { font-size: 13px; font-weight: 500; color: var(--ink); }
+  .mock-sub  { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
+  .pill {
+    font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px;
+    border: 1px solid var(--hair-strong);
+    color: var(--ink-2); background: var(--bg);
+  }
+  .pill.keep { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 40%, var(--hair-strong)); background: color-mix(in oklab, var(--ok) 8%, var(--bg)); }
+  .pill.del  { color: #b91c1c; border-color: color-mix(in oklab, #b91c1c 35%, var(--hair-strong)); background: color-mix(in oklab, #b91c1c 6%, var(--bg)); }
+  .mock-summary {
+    margin-top: 4px; padding: 10px 12px;
+    border: 1px dashed var(--hair-strong); border-radius: 8px;
+    font-size: 12px; color: var(--muted); font-family: var(--font-mono);
+    display: flex; justify-content: space-between; gap: 12px;
+  }
+  .mock-summary b { color: var(--ink); font-weight: 600; }
+
+  /* ----- sections ----- */
+  section { padding: 96px 0; border-bottom: 1px solid var(--hair); }
+  .section-head { max-width: 720px; margin-bottom: 48px; }
+  .kicker {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--accent-ink); letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  h2 {
+    font-size: clamp(28px, 3.4vw, 40px);
+    line-height: 1.1; letter-spacing: -0.02em;
+    font-weight: 600; margin: 12px 0 12px;
+  }
+  .section-head p { color: var(--ink-2); font-size: 17px; max-width: 60ch; }
+
+  /* ----- feature rows (NOT the 3-card trap) ----- */
+  .feature {
+    display: grid;
+    grid-template-columns: 1fr 1.25fr;
+    gap: 64px; align-items: center;
+    padding: 56px 0;
+    border-top: 1px solid var(--hair);
+  }
+  .feature:first-of-type { border-top: 0; padding-top: 0; }
+  .feature.reverse { grid-template-columns: 1.25fr 1fr; direction: rtl; }
+  .feature.reverse > * { direction: ltr; }
+  .feature h3 {
+    font-size: 24px; letter-spacing: -0.01em;
+    margin: 8px 0 10px; font-weight: 600;
+  }
+  .feature p { color: var(--ink-2); font-size: 16px; margin: 0 0 18px; }
+  .feature .num {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--accent-ink); letter-spacing: .08em;
+  }
+  .feature ul { margin: 0; padding-left: 18px; color: var(--ink-2); }
+  .feature li { margin: 6px 0; }
+  .feature .shot {
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--hair-strong);
+    background: var(--surface);
+    box-shadow: var(--shadow-2);
+    overflow: hidden;
+  }
+  .feature .shot img { width: 100%; height: auto; display: block; }
+  .feature .caption {
+    margin-top: 12px; font-size: 12px; color: var(--muted);
+    font-family: var(--font-mono);
+    display: flex; justify-content: space-between; gap: 12px;
+  }
+
+  /* ----- "how it works" steps ----- */
+  .steps {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+    counter-reset: step;
+  }
+  .step {
+    counter-increment: step;
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    border-radius: var(--radius);
+    padding: 22px;
+    position: relative;
+  }
+  .step::before {
+    content: counter(step, decimal-leading-zero);
+    font-family: var(--font-mono);
+    font-size: 12px; color: var(--accent-ink);
+    letter-spacing: .08em;
+  }
+  .step h4 { font-size: 16px; margin: 12px 0 6px; font-weight: 600; }
+  .step p { font-size: 13px; color: var(--ink-2); margin: 0; }
+  .step code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: color-mix(in oklab, var(--ink) 6%, transparent);
+    padding: 1px 5px; border-radius: 4px;
+  }
+
+  /* ----- code/install panel ----- */
+  .install {
+    display: grid; grid-template-columns: 1fr 1.4fr; gap: 48px;
+    align-items: start;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--hair-strong);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-1);
+  }
+  .panel-head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--hair);
+    font-size: 12px; color: var(--muted);
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: var(--font-mono);
+  }
+  .panel-body { padding: 18px 18px 22px; }
+  pre {
+    margin: 0;
+    background: var(--code-bg); color: var(--code-ink);
+    padding: 18px 20px; border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.7;
+    overflow-x: auto;
+  }
+  pre .c { color: #6b7280; }
+  pre .k { color: #93c5fd; }
+  pre .s { color: #fcd34d; }
+  pre .a { color: #f59e0b; }
+  pre .g { color: #34d399; }
+
+  /* ----- privacy table ----- */
+  .privacy {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+  }
+  .privacy .row {
+    display: grid; grid-template-columns: 24px 1fr auto; gap: 12px;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .privacy .check {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: color-mix(in oklab, var(--ok) 14%, transparent);
+    color: var(--ok);
+    display: grid; place-items: center;
+    font-size: 13px; font-weight: 700;
+  }
+  .privacy .label { font-size: 14px; font-weight: 500; }
+  .privacy .desc  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .privacy .state { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .privacy .state.on  { color: var(--ok); }
+
+  /* ----- footer ----- */
+  footer {
+    padding: 56px 0 64px;
+    color: var(--muted); font-size: 14px;
+  }
+  .foot-grid {
+    display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 32px;
+    margin-bottom: 40px;
+  }
+  .foot h5 { font-size: 12px; color: var(--ink); margin: 0 0 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  .foot ul { list-style: none; padding: 0; margin: 0; }
+  .foot li { margin: 6px 0; }
+  .foot a:hover { color: var(--ink); }
+  .foot-bot {
+    border-top: 1px solid var(--hair);
+    padding-top: 22px;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .pillrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .pillrow span {
+    font-family: var(--font-mono); font-size: 11px;
+    padding: 3px 8px; border-radius: 4px;
+    border: 1px solid var(--hair-strong); color: var(--ink-2);
+  }
+
+  /* ----- responsive ----- */
+  @media (max-width: 900px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+    .hero { padding: 56px 0 32px; }
+    section { padding: 64px 0; }
+    .feature, .feature.reverse { grid-template-columns: 1fr; gap: 24px; padding: 36px 0; direction: ltr; }
+    .steps { grid-template-columns: repeat(2, 1fr); }
+    .install { grid-template-columns: 1fr; gap: 24px; }
+    .privacy { grid-template-columns: 1fr; }
+    .foot-grid { grid-template-columns: 1fr 1fr; }
+    .nav-links a:not(.nav-cta) { display: none; }
+  }
+  @media (max-width: 520px) {
+    .steps { grid-template-columns: 1fr; }
+    .foot-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 38px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="#" class="brand">
+      <img src="logo.svg" alt="" class="brand-mark" />
+      <span>VidSweep</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/someguyinq123-ai/VidSweep" class="nav-cta">View on GitHub →</a>
+    </nav>
+  </div>
+</header>
+
+<!-- HERO -->
+<section class="hero" style="border-bottom: 1px solid var(--hair);">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow"><span class="dot"></span> v1.0 · GPL-3.0 · runs offline</span>
+      <h1>Find duplicate <em>videos</em>,<br/>even re-encodes.</h1>
+      <p class="lede">
+        A privacy-first desktop app that cleans up massive video libraries —
+        not just byte-identical copies, but the same video re-encoded at
+        different resolutions, bitrates, or containers. Everything happens
+        on your machine. Nothing is uploaded. Ever.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#install">Get VidSweep</a>
+        <a class="btn btn-ghost" href="#how">How it works →</a>
+      </div>
+      <div class="meta-row">
+        <span><strong>30k+</strong> files tested</span>
+        <span><strong>2×</strong> detection (SHA-256 + perceptual)</span>
+        <span><strong>0</strong> network calls</span>
+      </div>
+    </div>
+
+    <!-- mock UI window: side-by-side duplicate review -->
+    <div class="mock" aria-hidden="true">
+      <div class="mock-titlebar">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="title">VidSweep — Duplicates · Group 12 / 87</span>
+        <span style="margin-left:auto;font-family:var(--font-mono);">3 matches</span>
+      </div>
+      <div class="mock-body">
+        <div class="mock-row">
+          <div class="thumb a"></div>
+          <div>
+            <div class="mock-name">holiday_2023_final.mp4</div>
+            <div class="mock-sub">1280×720 · h264 · 5.08 Mbps · 04:12</div>
+          </div>
+          <span class="pill keep">KEEP — best</span>
+        </div>
+        <div class="mock-row">
+          <div class="thumb b"></div>
+          <div>
+            <div class="mock-name">holiday_2023_FINAL_v2 (1080p).mp4</div>
+            <div class="mock-sub">1920×1080 · h264 · 0.50 Mbps · 04:11</div>
+          </div>
+          <span class="pill del">DELETE</span>
+        </div>
+        <div class="mock-row">
+          <div class="thumb c"></div>
+          <div>
+            <div class="mock-name">holiday_2023.mkv</div>
+            <div class="mock-sub">1280×720 · hevc · 1.20 Mbps · 04:12</div>
+          </div>
+          <span class="pill del">DELETE</span>
+        </div>
+        <div class="mock-summary">
+          <span>4-frame pHash · 3/4 frames match · dur overlap 99.6%</span>
+          <span><b>2</b> dupes · <b>312 MB</b> reclaimable</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES (asymmetric rows, not a 3-card grid) -->
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">// features</div>
+      <h2>Two layers of detection. One human decision.</h2>
+      <p>VidSweep doesn't just compare filenames or hashes. It decodes four sampled frames from every video, hashes them perceptually, and cross-checks duration overlap — so a sharp 720p wins over a blurry “1080p” automatically.</p>
+    </div>
+
+    <article class="feature">
+      <div>
+        <div class="num">01 / perceptual matching</div>
+        <h3>Catches re-encodes the easy dedup tools miss.</h3>
+        <p>The same video can be re-encoded at any resolution, bitrate, or container — <code>mp4</code> → <code>mkv</code> → <code>avi</code>. SHA-256 won't find them; VidSweep's 4-frame pHash will.</p>
+        <ul>
+          <li>Two videos match when 3 of 4 frames agree <em>and</em> duration overlaps ≥ 10%.</li>
+          <li>Hardware-accelerated via NumPy popcount, with vectorized pure-Python fallback.</li>
+          <li>Tunable sensitivity with a plain-language guide.</li>
+        </ul>
+      </div>
+      <figure class="shot">
+        <img src="screenshots/4_group_detail_best_quality.png" alt="Duplicate review showing the sharp 720p (5.08 Mbps) auto-suggested as Keep over the blurry 1080p (0.50 Mbps)." />
+        <figcaption class="caption"><span>Duplicates · group detail</span><span>best copy pre-marked</span></figcaption>
+      </figure>
+    </article>
+
+    <article class="feature reverse">
+      <figure class="shot">
+        <img src="screenshots/5_marked_all.png" alt="Mark-all-keep-best applied across all duplicate groups." />
+        <figcaption class="caption"><span>Duplicates · marked all</span><span>one click per library</span></figcaption>
+      </figure>
+      <div>
+        <div class="num">02 / review at speed</div>
+        <h3>You decide. Quickly.</h3>
+        <p>Every duplicate group renders as a thumbnail grid with resolution, size, codec, and duration. The best copy is pre-marked <em>Keep</em>; one click marks the rest across every group, another executes.</p>
+        <ul>
+          <li>LRU-capped thumbnail cache — long review sessions don't grow memory.</li>
+          <li>Background-threaded matching — the window stays interactive during multi-minute scans.</li>
+          <li>Confirmation dialog lists every file before anything moves.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="feature">
+      <div>
+        <div class="num">03 / safe removal</div>
+        <h3>Recycle Bin, quarantine, or secure delete.</h3>
+        <p>Pick the safety net you want. Defaults to the OS Recycle Bin so you can recover. Move-to-folder never overwrites — collisions get numbered suffixes. Optional secure delete overwrites bytes before removal.</p>
+        <ul>
+          <li>Removal paths: Recycle Bin · quarantine folder · permanent · secure-overwrite.</li>
+          <li>Name-based category organizer with full move preview.</li>
+          <li>Every action is logged; nothing happens without a confirm dialog.</li>
+        </ul>
+      </div>
+      <figure class="shot">
+        <img src="screenshots/2_scan_progress.png" alt="Live scan progress with pause and fast cancel." />
+        <figcaption class="caption"><span>Scan · live progress</span><span>pause + fast cancel</span></figcaption>
+      </figure>
+    </article>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how" style="background: color-mix(in oklab, var(--surface) 50%, var(--bg));">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">// how it works</div>
+      <h2>Add folders. Scan. Review. Done.</h2>
+      <p>The first scan decodes four frames per video (a 30k library takes a few hours). Every rescan only touches new or changed files, so it's nearly instant.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <h4>Add folders</h4>
+        <p>Drag in any number of roots. VidSweep walks them, picks up video files, and ignores the rest.</p>
+      </div>
+      <div class="step">
+        <h4>Scan</h4>
+        <p>Decodes 4 sampled frames per file, hashes them, and stores everything in a local SQLite cache. Pause and resume any time.</p>
+      </div>
+      <div class="step">
+        <h4>Review</h4>
+        <p>Duplicate groups render as thumbnail grids. Best copy is pre-marked <em>Keep</em>. Click to override.</p>
+      </div>
+      <div class="step">
+        <h4>Execute</h4>
+        <p>One click moves marked files to Recycle Bin (or your chosen destination). The confirmation dialog lists every file.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRIVACY -->
+<section id="privacy">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">// privacy</div>
+      <h2>Nothing leaves your machine. <em style="font-style: normal; color: var(--ok);">By default.</em></h2>
+      <p>There is no telemetry, no analytics, no auto-update check, no “phone home”. Optional hardening features exist — but they're all <strong>opt-in</strong> and <strong>off by default</strong>.</p>
+    </div>
+
+    <div class="privacy">
+      <div class="row">
+        <div class="check">✓</div>
+        <div>
+          <div class="label">No network calls</div>
+          <div class="desc">Verified by running offline. The app makes zero outbound requests.</div>
+        </div>
+        <div class="state on">always</div>
+      </div>
+      <div class="row">
+        <div class="check">✓</div>
+        <div>
+          <div class="label">No telemetry, no analytics</div>
+          <div class="desc">No event reporting, no usage metrics, no crash reports.</div>
+        </div>
+        <div class="state on">always</div>
+      </div>
+      <div class="row">
+        <div class="check">✓</div>
+        <div>
+          <div class="label">No installer, no registry</div>
+          <div class="desc">Portable. Move the folder anywhere. Delete it to uninstall completely.</div>
+        </div>
+        <div class="state on">always</div>
+      </div>
+      <div class="row">
+        <div class="check">✓</div>
+        <div>
+          <div class="label">Local SQLite cache</div>
+          <div class="desc">Fingerprints live in <code>library.db</code> next to the app. You can wipe it any time.</div>
+        </div>
+        <div class="state on">always</div>
+      </div>
+      <div class="row">
+        <div class="check">+</div>
+        <div>
+          <div class="label">Secure delete (overwrite before removal)</div>
+          <div class="desc">Optional. Slower; useful for sensitive libraries.</div>
+        </div>
+        <div class="state">opt-in · off</div>
+      </div>
+      <div class="row">
+        <div class="check">+</div>
+        <div>
+          <div class="label">Wipe database on exit</div>
+          <div class="desc">Optional. Purges the SQLite fingerprint cache when the app closes.</div>
+        </div>
+        <div class="state">opt-in · off</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section id="install">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">// install</div>
+      <h2>Two commands. No installer.</h2>
+      <p>Requires Python 3.11+ and ffmpeg/ffprobe (the GUI has a “Locate ffmpeg…” button if it can't find one).</p>
+    </div>
+
+    <div class="install">
+      <div>
+        <h3 style="font-size:18px;margin:0 0 10px;">Windows</h3>
+        <p style="color:var(--ink-2);font-size:14px;margin:0 0 18px;">Double-click <code>VidSweep.bat</code>. It auto-locates a suitable Python and offers one-time dependency setup.</p>
+        <h3 style="font-size:18px;margin:24px 0 10px;">Linux / macOS</h3>
+        <p style="color:var(--ink-2);font-size:14px;margin:0 0 18px;">Install once, then launch with <code>python3 gui.py</code>. NumPy is optional but recommended — it makes matching several times faster.</p>
+
+        <div class="pillrow">
+          <span>Python 3.11+</span>
+          <span>ffmpeg / ffprobe</span>
+          <span>Pillow · imagehash · send2trash</span>
+          <span>NumPy (recommended)</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><span>install · bash</span><span>~ 30 seconds</span></div>
+        <pre><span class="c"># 1. dependencies</span>
+<span class="k">pip</span> install pillow imagehash send2trash <span class="a">numpy</span>
+
+<span class="c"># 2. grab the code</span>
+<span class="k">git</span> clone https://github.com/someguyinq123-ai/VidSweep.git
+<span class="k">cd</span> VidSweep
+
+<span class="c"># 3. launch</span>
+<span class="k">python3</span> gui.py</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <a href="#" class="brand"><img src="logo.svg" alt="" class="brand-mark" /><span>VidSweep</span></a>
+        <p style="margin-top:14px;color:var(--ink-2);font-size:14px;max-width:38ch;">
+          A privacy-first desktop tool for finding duplicate videos — even re-encoded ones — in large libraries.
+        </p>
+        <div class="pillrow">
+          <span>GPL-3.0</span>
+          <span>Python 3.11+</span>
+          <span>Windows · Linux · macOS</span>
+        </div>
+      </div>
+      <div>
+        <h5>Project</h5>
+        <ul>
+          <li><a href="https://github.com/someguyinq123-ai/VidSweep">Source on GitHub</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#privacy">Privacy</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Docs</h5>
+        <ul>
+          <li><a href="https://github.com/someguyinq123-ai/VidSweep/blob/main/README.md">README</a></li>
+          <li><a href="https://github.com/someguyinq123-ai/VidSweep/blob/main/LICENSE">License</a></li>
+          <li><a href="https://github.com/someguyinq123-ai/VidSweep/issues">Issues</a></li>
+          <li><a href="https://github.com/someguyinq123-ai/VidSweep/actions">CI status</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Contact</h5>
+        <ul>
+          <li><a href="mailto:someguyinq123@gmail.com">someguyinq123@gmail.com</a></li>
+          <li><a href="https://github.com/someguyinq123-ai/VidSweep/discussions">Discussions</a></li>
+          <li><a href="#install">Install</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="foot-bot">
+      <span>© <span id="y"></span> VidSweep · Licensed under GPL-3.0 · Commercial license available.</span>
+      <span style="font-family:var(--font-mono);font-size:12px;">Built with Python · tkinter · ffmpeg</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.getElementById('y').textContent = new Date().getFullYear();
+</script>
+
+</body>
+</html>

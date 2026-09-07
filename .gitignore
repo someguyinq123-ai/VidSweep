@@ -3,6 +3,8 @@ library.db
 library.db-wal
 library.db-shm
 library.db-journal
+scan_state.json
+db_location.txt
 privacy.json
 settings.json
 crash.log

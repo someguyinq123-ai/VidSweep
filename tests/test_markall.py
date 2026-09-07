@@ -22,6 +22,12 @@ for gi in range(45):
     shutil.copy(v, os.path.join(a, f'vid{gi:02}_copy.mp4'))
 print('built 90 test videos')
 
+# ISOLATION: App() must never open the real library.db next to core.py
+_iso_dir = tempfile.mkdtemp(prefix='vs_db_')
+_iso_init = core.VideoOrganizer.__init__
+core.VideoOrganizer.__init__ = (
+    lambda self, db_path=None: _iso_init(
+    self, db_path=db_path or os.path.join(_iso_dir, 't.db')))
 app = gui.App()
 app.org = core.VideoOrganizer(db_path=os.path.join(tmp, 't.db'))  # ISOLATED
 app.thumbs = gui.ThumbnailCache(app.org)

@@ -44,8 +44,13 @@ old_h = hashes_of(old_frames)
 
 d2 = os.path.join(tmp, 'new'); os.makedirs(d2)
 t0 = time.perf_counter()
-new_frames = core.VideoOrganizer.__dict__['_extract_frames'](None, src, 60.0, d2) \
-    if False else core.VideoOrganizer.__new__(core.VideoOrganizer)._extract_frames(src, 60.0, d2)
+# bare instance (no DB): _extract_frames only needs the kill-on-cancel
+# process registry used by _run_tracked
+import threading
+bare = core.VideoOrganizer.__new__(core.VideoOrganizer)
+bare._procs = set()
+bare._procs_lock = threading.Lock()
+new_frames = bare._extract_frames(src, 60.0, d2)
 new_t = time.perf_counter() - t0
 new_h = hashes_of(new_frames)
 

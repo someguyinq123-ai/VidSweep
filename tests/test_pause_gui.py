@@ -18,6 +18,12 @@ for gi in range(12):
                    check=True, capture_output=True)
 
 db = os.path.join(tmp, 't.db')
+# ISOLATION: App() must never open the real library.db next to core.py
+_iso_dir = tempfile.mkdtemp(prefix='vs_db_')
+_iso_init = core.VideoOrganizer.__init__
+core.VideoOrganizer.__init__ = (
+    lambda self, db_path=None: _iso_init(
+    self, db_path=db_path or os.path.join(_iso_dir, 't.db')))
 app = gui.App()
 app.org = core.VideoOrganizer(db_path=db)
 app.thumbs = gui.ThumbnailCache(app.org)
@@ -30,6 +36,8 @@ def log(msg):
 def run():
     ph = state['phase']
     t = time.monotonic()
+    # Every wait/transition branch must reschedule itself — a bare `return`
+    # here kills the polling loop and the test hangs at "phase0" forever.
     if ph == 0:
         log('phase0: starting scan')
         app.folder_list.insert('end', a)
@@ -39,6 +47,7 @@ def run():
     elif ph == 1:
         # wait until some progress, then click Pause (through the real command)
         if app.progress['value'] < 20:
+            app.after(200, run)
             return
         log(f'phase1: pausing at {app.progress["value"]:.0f}%')
         app.toggle_pause()  # same as clicking the button
@@ -48,6 +57,7 @@ def run():
     elif ph == 2:
         # confirm we're actually paused for 2s
         if time.monotonic() - state['paused_at'] < 2.0:
+            app.after(200, run)
             return
         state['events'].append(f'2s later, progress={app.progress["value"]:.0f}% (should equal paused value)')
         state['frozen_value'] = app.progress['value']
@@ -60,32 +70,31 @@ def run():
         if app.progress['value'] > state['frozen_value'] + 5:
             state['events'].append(f'RESUME OK: progress now {app.progress["value"]:.0f}%')
             state['phase'] = 4
-            return
-        if time.monotonic() - state['resumed_at'] > 10:
+        elif time.monotonic() - state['resumed_at'] > 10:
             state['events'].append(f'RESUME HANG: stuck at {app.progress["value"]:.0f}% for 10s')
             state['phase'] = 4
-            return
     elif ph == 4:
         if 'RESUME HANG' in state['events'][-1]:
             # try cancel while in the bad state
             app.cancel_scan()
             state['cancel_at'] = time.monotonic()
             state['phase'] = 5
-            return
         else:
             app.cancel_scan()
             state['cancel_at'] = time.monotonic()
             state['phase'] = 5
-            return
     elif ph == 5:
         th = app._scan_thread
         if th is not None and th.is_alive():
             if time.monotonic() - state['cancel_at'] > 10:
                 state['events'].append('CANCEL HANG: thread still alive after 10s')
                 app.destroy()
+            else:
+                app.after(200, run)
             return
         state['events'].append('CANCEL OK: scan thread ended')
         app.destroy()
+        return
     else:
         return
     app.after(200, run)
