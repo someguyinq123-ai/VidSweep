@@ -189,6 +189,10 @@ class VideoOrganizer:
             roots TEXT,
             recursive INTEGER,
             status TEXT)""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS dismissed_groups(
+            group_key TEXT PRIMARY KEY,
+            paths TEXT NOT NULL,
+            created REAL)""")
         # migration for caches created before session tracking existed
         cols = [r[1] for r in self.db.execute('PRAGMA table_info(files)')]
         if 'session_id' not in cols:
@@ -965,6 +969,121 @@ class VideoOrganizer:
                          'width': w, 'height': h, 'vcodec': vc})
         return recs
 
+    # ------------------------------------------------- not-duplicates dismissals
+    @staticmethod
+    def group_key(paths):
+        """Stable identity for a duplicate group.
+
+        The key is the SHA-256 of the sorted, case-folded, absolute member
+        paths. It is unaffected by scan order or by the order the caller
+        lists the paths, so the same set of files dismisses reliably across
+        rescans and restarts.
+        """
+        if isinstance(paths, (str, bytes, os.PathLike)):
+            paths = [paths]
+        canonical = sorted(
+            os.path.normcase(os.path.abspath(p)).casefold()
+            for p in paths
+        )
+        digest = hashlib.sha256()
+        for p in canonical:
+            # NUL cannot appear in file paths and keeps concatenated paths
+            # unambiguous
+            digest.update(p.encode('utf-8', 'surrogateescape'))
+            digest.update(b'\0')
+        return digest.hexdigest()
+
+    @staticmethod
+    def _stored_paths_json(paths):
+        entries = []
+        seen = set()
+        for p in paths or ():
+            ap = os.path.abspath(p)
+            norm = os.path.normcase(ap).casefold()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            entries.append((norm, str(ap)))
+        entries.sort(key=lambda e: e[0])
+        return json.dumps([ap for _, ap in entries])
+
+    def dismiss_group(self, group_key=None, paths=None):
+        """Persist a group dismissal.
+
+        Accepts the precomputed stable group key, the member paths (which
+        are used to compute it), or both. Returns the group key.
+        """
+        if paths is None and isinstance(group_key, (list, tuple, set, frozenset)):
+            paths = list(group_key)
+            group_key = None
+        if paths is not None and isinstance(paths, (str, bytes, os.PathLike)):
+            paths = [paths]
+        path_list = list(paths) if paths is not None else None
+        if group_key is None:
+            if not path_list:
+                raise ValueError(
+                    'dismiss_group needs a group key or the member paths')
+            group_key = self.group_key(path_list)
+        stored = self._stored_paths_json(path_list) if path_list is not None else '[]'
+        with self._db_lock:
+            self.db.execute(
+                'INSERT OR REPLACE INTO dismissed_groups(group_key, paths, created)'
+                ' VALUES(?,?,?)',
+                (group_key, stored, time.time()))
+            self._safe_commit()
+        return group_key
+
+    def undismiss_group(self, group_key=None, paths=None):
+        """Remove a previously stored dismissal, restoring the group.
+
+        Accepts the stable group key or the member paths used to compute it.
+        """
+        if paths is None and isinstance(group_key, (list, tuple, set, frozenset)):
+            paths = list(group_key)
+            group_key = None
+        if paths is not None:
+            if isinstance(paths, (str, bytes, os.PathLike)):
+                paths = [paths]
+            group_key = self.group_key(list(paths))
+        if group_key is None:
+            raise ValueError('undismiss_group needs a group key or member paths')
+        with self._db_lock:
+            cur = self.db.execute(
+                'DELETE FROM dismissed_groups WHERE group_key=?', (group_key,))
+            self._safe_commit()
+        return cur.rowcount > 0
+
+    def list_dismissed(self):
+        """Return stored dismissals as dicts with group_key/paths/created."""
+        with self._db_lock:
+            rows = self.db.execute(
+                'SELECT group_key, paths, created FROM dismissed_groups '
+                'ORDER BY created, group_key').fetchall()
+        out = []
+        for key, stored, created in rows:
+            try:
+                paths = json.loads(stored) if stored else []
+            except (ValueError, TypeError):
+                paths = []
+            if not isinstance(paths, list):
+                paths = []
+            out.append({'group_key': key, 'paths': paths,
+                        'created': created})
+        return out
+
+    def clear_dismissed(self):
+        """Delete every stored dismissal; returns the number removed."""
+        with self._db_lock:
+            cur = self.db.execute('DELETE FROM dismissed_groups')
+            self._safe_commit()
+        return cur.rowcount
+
+    def _dismissed_group_keys(self):
+        with self._db_lock:
+            rows = self.db.execute(
+                'SELECT group_key FROM dismissed_groups').fetchall()
+        return {row[0] for row in rows}
+
     def get_last_session(self):
         """Most recent scan session, for the GUI's Resume button.
 
@@ -1147,6 +1266,10 @@ class VideoOrganizer:
         for g in dupes:
             g.sort(key=self._quality_key, reverse=True)
         dupes.sort(key=lambda g: -sum(r['size'] for r in g))
+        dismissed = self._dismissed_group_keys()
+        if dismissed and dupes:
+            dupes = [g for g in dupes
+                     if self.group_key([r['path'] for r in g]) not in dismissed]
         return dupes
 
     @staticmethod
@@ -1244,6 +1367,11 @@ class VideoOrganizer:
 
     def close(self):
         self.db.close()
+
+
+def group_key(paths):
+    """Module-level convenience for VideoOrganizer.group_key."""
+    return VideoOrganizer.group_key(paths)
 
 
 if __name__ == '__main__':

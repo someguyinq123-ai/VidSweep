@@ -1214,6 +1214,10 @@ class App(tk.Tk):
             self._load_settings_full().get('fast_match', True)))
         ttk.Checkbutton(top, text='Fast match (large libraries)',
                         variable=self.fast_var).pack(side='left')
+        ttk.Button(top, text='Dismiss all shown groups',
+                   command=self.dismiss_all_shown).pack(side='left', padx=6)
+        ttk.Button(top, text='Reset dismissed groups',
+                   command=self.reset_dismissed_groups).pack(side='left', padx=6)
 
         # --- action bar: delete/keep right here, at the top where it's obvious
         action = ttk.LabelFrame(f, text=' Act on marked files ', padding=(8, 4))
@@ -1257,6 +1261,8 @@ class App(tk.Tk):
         self.detail_info.pack(anchor='w')
         ttk.Button(right, text='Keep best in THIS group, delete the rest',
                    command=self._keep_best_current_group).pack(anchor='w', pady=2)
+        ttk.Button(right, text='Dismiss (not duplicates)',
+                   command=self.dismiss_current_group).pack(anchor='w', pady=2)
         canvas_frame = ttk.Frame(right)
         canvas_frame.pack(fill='both', expand=True)
         self.detail_canvas = tk.Canvas(canvas_frame, highlightthickness=0,
@@ -1676,6 +1682,82 @@ class App(tk.Tk):
             else:
                 v.set('keep' if i == 0 else 'delete')
         self._update_marked_count()
+
+    # ---------------------------------------------- not-duplicates dismissals
+    def dismiss_current_group(self):
+        """Persistently hide the selected duplicate group from future scans."""
+        sel = self.group_tree.selection()
+        if not sel:
+            messagebox.showinfo('VidSweep', 'Select a duplicate group first.')
+            return
+        gi = int(sel[0])
+        g = self.groups[gi]
+        paths = [r['path'] for r in g]
+        try:
+            key = self.org.group_key(paths)
+            self.org.dismiss_group(key, paths)
+        except Exception as e:
+            messagebox.showerror('VidSweep', f'Could not dismiss group:\n{e}')
+            return
+        self.log_line(
+            f'Dismissed group {gi + 1} as "not duplicates" '
+            f'({len(g)} files): {os.path.basename(paths[0])} …')
+        self.status_var.set(
+            f'Group {gi + 1} dismissed — hidden until "Reset dismissed groups".')
+        self.load_groups()
+
+    def dismiss_all_shown(self):
+        """Convenience: dismiss every currently displayed group as not duplicates."""
+        if not self.groups:
+            messagebox.showinfo('VidSweep',
+                                'No groups loaded — scan first.')
+            return
+        n_files = sum(len(g) for g in self.groups)
+        if not messagebox.askyesno(
+                'Dismiss all shown groups',
+                f'Dismiss all {len(self.groups)} currently shown group(s) '
+                f'({n_files} files) as "not duplicates"?\n\n'
+                'They will stay hidden from duplicate results until you click '
+                '“Reset dismissed groups”.'):
+            return
+        try:
+            for g in self.groups:
+                paths = [r['path'] for r in g]
+                self.org.dismiss_group(self.org.group_key(paths), paths)
+        except Exception as e:
+            messagebox.showerror('VidSweep', f'Could not dismiss groups:\n{e}')
+            return
+        self.log_line(
+            f'Dismissed {len(self.groups)} group(s) as "not duplicates".')
+        self.status_var.set(
+            f'Dismissed {len(self.groups)} groups — hidden until reset.')
+        self.load_groups()
+
+    def reset_dismissed_groups(self):
+        """Clear the persistent dismissal table, restoring hidden groups."""
+        try:
+            entries = self.org.list_dismissed()
+        except Exception as e:
+            messagebox.showerror('VidSweep',
+                                 f'Could not read dismissed groups:\n{e}')
+            return
+        if not entries:
+            messagebox.showinfo('VidSweep',
+                                'No dismissed groups are stored — nothing to reset.')
+            return
+        if not messagebox.askyesno(
+                'Reset dismissed groups',
+                f'Restore {len(entries)} dismissed group(s) to the duplicate list?'):
+            return
+        try:
+            n = self.org.clear_dismissed()
+        except Exception as e:
+            messagebox.showerror('VidSweep',
+                                 f'Could not reset dismissed groups:\n{e}')
+            return
+        self.log_line(f'Reset dismissed groups — {n} group(s) restored.')
+        self.status_var.set(f'Dismissed groups reset — {n} group(s) restored.')
+        self.load_groups()
 
     def _update_marked_count(self):
         if hasattr(self, 'marked_label'):
