@@ -14,6 +14,7 @@ Pipeline:
 Everything is cached in SQLite so re-scans only fingerprint new/changed files.
 """
 
+import csv
 import hashlib
 import json
 import os
@@ -204,7 +205,8 @@ class VideoOrganizer:
             self.db.execute(
                 'ALTER TABLE sessions ADD COLUMN paused INTEGER DEFAULT 0')
         if 'total' not in scols:
-            self.db.execute('ALTER TABLE sessions ADD COLUMN total INTEGER')
+            self.db.execute(
+                'ALTER TABLE sessions ADD COLUMN total INTEGER')
         self._safe_commit()
 
     # ------------------------------------------------------------------ util
@@ -1364,6 +1366,76 @@ class VideoOrganizer:
                 cat = 'Misc'
             suggestions.append((p, cat))
         return suggestions
+
+    # ------------------------------------------------------------------ export
+    # Fixed, ordered CSV columns produced by export_groups(). The export is a
+    # pure projection of the caller's data — it never regrouped, re-ranks, or
+    # consults the library/database.
+    EXPORT_HEADER = ('group_id', 'index_in_group', 'is_keep_best', 'path',
+                     'size_bytes', 'duration_seconds', 'bitrate_kbps',
+                     'resolution', 'codec', 'wasted_bytes_in_group')
+
+    @staticmethod
+    def _export_cell(value):
+        """Missing metadata renders as an empty CSV field; legitimate zeroes
+        (size 0, bitrate 0) are preserved exactly as given."""
+        return '' if value is None else value
+
+    def export_groups(self, groups, dest_path):
+        """
+        Write the supplied duplicate groups to dest_path as CSV.
+
+        Pure projection: the order of groups and of their members — and thus
+        which member sits at index 0 (the designated keeper) — is preserved
+        exactly as supplied. Nothing is regrouped, re-ranked, sorted, or
+        recomputed against the library, no input record is mutated, and the
+        database is never consulted.
+
+        dest_path is overwritten in UTF-8 (no BOM) with LF line endings.
+        Missing parent directories are NOT created and any open/write/CSV
+        error propagates unchanged.
+        """
+        with open(dest_path, 'w', encoding='utf-8', newline='') as fh:
+            writer = csv.writer(fh, lineterminator='\n')
+            writer.writerow(self.EXPORT_HEADER)
+            for group_id, group in enumerate(groups):
+                # Group waste is only meaningful when every member size is
+                # known: total bytes minus the index-zero keeper's bytes.
+                # Repeated on every row of the group; blank otherwise.
+                sizes = [rec.get('size') for rec in group]
+                if group and all(s is not None for s in sizes):
+                    wasted = sum(sizes) - sizes[0]
+                else:
+                    wasted = None
+                for index_in_group, rec in enumerate(group):
+                    size = rec.get('size')
+                    duration = rec.get('duration')
+                    width = rec.get('width')
+                    height = rec.get('height')
+                    # average WHOLE-FILE bitrate in kbps from the ORIGINAL,
+                    # unrounded duration; blank when the size is unknown or
+                    # the duration is missing/non-positive.
+                    if size is not None and duration is not None \
+                            and duration > 0:
+                        bitrate = round(size * 8 / duration / 1000)
+                    else:
+                        bitrate = None
+                    if width is not None and height is not None:
+                        resolution = f'{width}x{height}'
+                    else:
+                        resolution = None
+                    writer.writerow([
+                        group_id,
+                        index_in_group,
+                        1 if index_in_group == 0 else 0,
+                        self._export_cell(rec.get('path')),
+                        self._export_cell(size),
+                        '' if duration is None else f'{duration:.2f}',
+                        self._export_cell(bitrate),
+                        self._export_cell(resolution),
+                        self._export_cell(rec.get('vcodec')),
+                        self._export_cell(wasted),
+                    ])
 
     def close(self):
         self.db.close()
