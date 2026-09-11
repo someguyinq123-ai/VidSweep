@@ -203,6 +203,36 @@ If unrelated videos are being GROUPED, lower it.
 """
 
 
+
+def export_snapshot_to_csv(snapshot, *, ask_path, export, info, error):
+    """Export an already-selected snapshot of groups to CSV.
+
+    The SNAPSHOT is what gets exported and what the messages count: taking it once
+    means the file and the reported counts cannot drift apart if the view reloads
+    mid-export. Cancellation is a silent no-op BEFORE the exporter is called.
+    A failure is surfaced with the exporter's own message and no claim is made about
+    what state the destination file is in — the engine promises overwrite and a
+    visible failure, not an atomic write.
+
+    Returns a small result dict (used by the tests).
+    """
+    groups = list(snapshot or [])
+    if not groups:
+        info('VidSweep', 'No groups are currently shown — scan first.')
+        return {'exported': False, 'reason': 'nothing_shown'}
+    path = ask_path()
+    if not path:                      # user cancelled: no file is touched
+        return {'exported': False, 'reason': 'cancelled'}
+    rows = sum(len(grp) for grp in groups)
+    try:
+        export(groups, path)
+    except Exception as exc:          # surfaced, never swallowed
+        error('VidSweep', f'Could not write the CSV:\n{exc}')
+        return {'exported': False, 'reason': 'error', 'error': str(exc), 'path': path}
+    info('VidSweep', f'Exported {len(groups)} group(s) ({rows} file row(s)) to:\n{path}')
+    return {'exported': True, 'groups': len(groups), 'rows': rows, 'path': path}
+
+
 class _SensitivityHelpDialog(tk.Toplevel):
     """Professional structured help dialog: sections + color-coded level table."""
 
@@ -1218,6 +1248,8 @@ class App(tk.Tk):
                    command=self.dismiss_all_shown).pack(side='left', padx=6)
         ttk.Button(top, text='Reset dismissed groups',
                    command=self.reset_dismissed_groups).pack(side='left', padx=6)
+        ttk.Button(top, text='Export shown groups to CSV…',
+                   command=self.export_shown_groups).pack(side='left', padx=6)
 
         # --- action bar: delete/keep right here, at the top where it's obvious
         action = ttk.LabelFrame(f, text=' Act on marked files ', padding=(8, 4))
@@ -1705,6 +1737,22 @@ class App(tk.Tk):
         self.status_var.set(
             f'Group {gi + 1} dismissed — hidden until "Reset dismissed groups".')
         self.load_groups()
+
+    def export_shown_groups(self):
+        """Write the groups currently shown in this view to a CSV the operator picks."""
+        if not getattr(self, 'groups', None):
+            messagebox.showinfo('VidSweep', 'No groups are currently shown — scan first.')
+            return
+        snapshot = list(self.groups)          # ONE snapshot: exports and counts agree
+        export_snapshot_to_csv(
+            snapshot,
+            ask_path=lambda: filedialog.asksaveasfilename(
+                parent=self, title=f'Export {len(snapshot)} shown group(s) to CSV',
+                defaultextension='.csv', initialfile='vidsweep_duplicates.csv',
+                filetypes=[('CSV file', '*.csv'), ('All files', '*.*')]),
+            export=lambda groups, path: self.org.export_groups(groups, path),
+            info=messagebox.showinfo, error=messagebox.showerror)
+
 
     def dismiss_all_shown(self):
         """Convenience: dismiss every currently displayed group as not duplicates."""
