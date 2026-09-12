@@ -203,6 +203,81 @@ If unrelated videos are being GROUPED, lower it.
 """
 
 
+# ---- reclaimable-space summary (Duplicates tab) ---------------------------
+# Three pure, Tk-free helpers. Each one decides a single thing: what part of a
+# duplicate group is measurable, how a byte count renders, and what the
+# summary sentence says. None of them reads the database, the settings,
+# APP_DIR or any Tk/widget state, so all of it is testable on plain lists.
+
+_BYTE_UNITS = ('B', 'KB', 'MB', 'GB', 'TB')
+
+
+def human_bytes(n):
+    """Render a non-negative byte count, 1024-based (KB = 1024 B).
+
+    Values below 1024 keep their exact integer form ("0 B", "1023 B");
+    larger values carry exactly one decimal place. The unit is chosen by
+    dividing the UNROUNDED value while it is >= 1024, so a count that merely
+    rounds up to a unit boundary stays in the smaller unit
+    (1048575 -> "1024.0 KB"). TB is the largest unit and is never exceeded.
+    A negative count is a programming error and raises ValueError.
+    """
+    if n < 0:
+        raise ValueError('byte count must not be negative')
+    value = n
+    unit = 0
+    while value >= 1024 and unit < len(_BYTE_UNITS) - 1:
+        value /= 1024.0
+        unit += 1
+    if unit == 0:
+        return f'{int(value)} B'
+    return f'{value:.1f} {_BYTE_UNITS[unit]}'
+
+
+def reclaimable_summary(groups):
+    """Summarize the reclaimable space of the supplied duplicate ``groups``.
+
+    Pure and Tk-free: reads no database, no settings and no widget state, and
+    never mutates its input. One place decides what is measurable, and it
+    mirrors the conservative export policy: a group counts only when it is
+    non-empty and EVERY member carries a known numeric ``size`` (None or an
+    absent key means unknown). An unmeasurable group contributes nothing to
+    ``wasted_bytes`` and is counted in ``unknown_groups`` instead of being
+    guessed at. ``groups`` counts every supplied group and ``files`` counts
+    every member of every supplied group, known or unknown.
+    """
+    summary = {'groups': 0, 'files': 0, 'wasted_bytes': 0, 'unknown_groups': 0}
+    for group in (groups or ()):
+        members = list(group or ())
+        summary['groups'] += 1
+        summary['files'] += len(members)
+        sizes = [member.get('size') for member in members]
+        measurable = bool(members) and all(
+            isinstance(size, (int, float)) for size in sizes)
+        if measurable:
+            # keeper-first: everything after the best copy is the redundancy
+            summary['wasted_bytes'] += sum(sizes) - sizes[0]
+        else:
+            # empty group (no keeper to subtract) or a member whose size was
+            # never recorded: the quantity is not measurable — say so
+            summary['unknown_groups'] += 1
+    return summary
+
+
+def reclaim_label_text(summary):
+    """The Duplicates-tab summary sentence for a reclaimable_summary() dict.
+
+    The wording is part of the contract: the base sentence names the
+    reclaimable total and the group count, and the unknown-size suffix is
+    appended only when at least one group was not measurable.
+    """
+    text = (f"Reclaimable: {human_bytes(summary.get('wasted_bytes', 0))} "
+            f"across {summary.get('groups', 0)} group(s)")
+    unknown = summary.get('unknown_groups', 0)
+    if unknown:
+        text += f" \u00b7 {unknown} group(s) with unknown sizes"
+    return text
+
 
 def export_snapshot_to_csv(snapshot, *, ask_path, export, info, error):
     """Export an already-selected snapshot of groups to CSV.
@@ -1381,16 +1456,22 @@ class App(tk.Tk):
         self.groups = groups
         for iid in self.group_tree.get_children():
             self.group_tree.delete(iid)
-        total_waste = 0
         for gi, g in enumerate(self.groups):
-            waste = sum(r['size'] for r in g[1:])
-            total_waste += waste
+            # "Redundant MB" keeps its historical shape: the bytes of every
+            # member after the keeper, rendered exactly as before. A member
+            # whose size was never recorded is skipped here rather than being
+            # allowed to raise; what is actually measurable is decided in one
+            # place by reclaimable_summary() for the label below.
+            tail = [r.get('size') for r in g[1:]]
+            waste = sum(size for size in tail
+                        if isinstance(size, (int, float)))
             self.group_tree.insert('', 'end', iid=str(gi),
                 values=(f'Group {gi+1} ({len(g)} files)', f'{waste/1e6:,.1f}'))
+        # one helper decides the sentence, one decides what is measurable;
+        # the bracketed scope text stays exactly the one load_groups() chose
         self.dupe_summary.config(
-            text=f'{len(self.groups)} duplicate groups — '
-                 f'{total_waste/1e9:.2f} GB redundant '
-                 f'[{getattr(self, "_load_scope_txt", "entire library")}]')
+            text=reclaim_label_text(reclaimable_summary(self.groups))
+                 + f' [{getattr(self, "_load_scope_txt", "entire library")}]')
         self.decisions.clear()
         self.status_var.set(f'Loaded {len(self.groups)} duplicate groups.')
         self._update_marked_count()  # decisions were just cleared
