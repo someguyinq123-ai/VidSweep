@@ -56,6 +56,11 @@ One click marks every inferior copy across ALL groups:**
   LRU-capped thumbnail cache so long review sessions don't grow memory
 - "Keep best, delete rest" per group or across all groups — best copy is
   chosen by bitrate first, so a sharp 720p beats a blurry 1080p
+- Reclaimable-space summary in the review header — the exact total the shown
+  groups can reclaim (1024-based units); groups with incomplete metadata are
+  counted, never guessed at
+- CSV export of the groups on screen — per-file true-kbps bitrate, resolution
+  and per-group reclaimable bytes, for review outside the app
 - Safe moves: moving a file to a folder where its name already exists never
   overwrites — collisions get numbered suffixes (`video.mp4` → `video_1.mp4`)
 - Removal via Recycle Bin (default), quarantine folder, permanent delete, or
@@ -80,7 +85,9 @@ One click marks every inferior copy across ALL groups:**
 2. **Scan** tab: add folders → Start scan. First scan decodes 4 frames per
    video (a 30k library takes a few hours); rescans are nearly instant.
 3. **Duplicates** tab: review, mark, Execute — the confirmation dialog lists
-   every file so nothing is ambiguous.
+   every file so nothing is ambiguous. The header shows the reclaimable total;
+   **Export shown groups to CSV…** writes the current list for review outside
+   the app.
 4. **Organize** tab (optional): preview and apply name-based category folders.
 
 ## Status

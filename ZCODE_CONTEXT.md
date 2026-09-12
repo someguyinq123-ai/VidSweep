@@ -153,6 +153,8 @@ Raised on user cancel; propagates through all threads.
 - **Left**: Treeview of groups (file count, redundant MB)
 - **Right**: Thumbnail grid per group with Keep/Delete/Move radios + Open button
 - **Action bar**: Execute (Recycle Bin / Quarantine / Permanent), "Mark ALL groups: keep best, delete rest"
+- **Reclaimable summary** (F-EXP-2): the header label text is `reclaim_label_text(reclaimable_summary(groups))` + ` [<scope>]` — three module-level, Tk-free helpers in `gui.py`. Conservative policy mirrors the export: a group counts only when it is non-empty and EVERY member carries a known numeric `size`; unknown/empty groups are counted in `unknown_groups`, never guessed. `human_bytes` is 1024-based with one decimal above 1024. The group-tree "Redundant MB" column keeps its historical format and skips an unknown tail size instead of raising
+- **CSV export** (F-EXP-1): "Export shown groups to CSV…" exports exactly the shown groups as one pre-dialog snapshot (`export_snapshot_to_csv`); the engine is `core.VideoOrganizer.export_groups`
 - Marked count label updates live
 
 #### Organize Tab
@@ -182,6 +184,10 @@ C:\Users\WY\AppData\Local\Python\bin\python.exe -m pytest tests/
 | `test_partial_scan.py` | Partial scan: stop mid-way, batch-scoped dupes, resume with zero re-hashing, session supersede |
 | `test_resume_restart.py` | Two-process simulation: pause → close → "reboot" (fresh interpreter) → resume with zero re-hashing |
 | `test_resume_prompt.py` | Startup resume prompt: paused session offered, declines don't launch, accept resumes same session id |
+| `test_f001_dismissal.py` | Not-duplicates dismissal contract (F-001): dismiss / undismiss / list / clear, group-key stability |
+| `test_export_groups.py` | CSV export contract (F-EXP-1): frozen header, keeper-first order, true-kbps bitrate, blank-vs-zero rules, unknown-size waste policy |
+| `test_export_ui.py` | Export button flow through injected dialogs: snapshot, cancellation, failure reporting |
+| `test_reclaim_summary.py` | Reclaimable-space helpers contract (F-EXP-2): four-key summary, conservative unknown-size policy, 1024-based units, exact label text |
 | `test_perf.py` | Performance benchmarks |
 
 ---
