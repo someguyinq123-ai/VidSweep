@@ -128,7 +128,7 @@ def main():
         sp.run([FF, '-y', '-v', 'error',
                 '-f', 'lavfi', '-i', f'testsrc2=s=640x360:r=24:d={9 + gi}',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt',
-                'yuv420p', v], check=True, capture_output=True)
+                'yuv420p', v], check=True, capture_output=True, stdin=sp.DEVNULL)
 
     db = os.path.join(tmp, 't.db')
     phase_a(db, a)
