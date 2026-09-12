@@ -1,18 +1,24 @@
 {
-  "version": "F-EXP-2",
+  "version": "F-EXP-3",
   "owner": "operator (explicit setup; never model-authored)",
-  "note": "Accepted check registry for the reclaimable-summary feature. frozen_contract is the operator's test written from the frozen F-EXP-2 record; it lives in the feature run directory OUTSIDE the writer's scope, and the check runs with the candidate tree as CWD.",
+  "note": "Accepted check registry for the quarantine-restore feature. frozen_contract and restore_edge_contract are the operator's tests written from the frozen F-EXP-3 record; they live in the feature run directory OUTSIDE the writer's scope, and the checks run with the candidate tree as CWD.",
   "operations": {
-    "op.vidsweep.reclaim_summary_test": {
+    "op.vidsweep.restore_tests": {
       "type": "COMMAND_RESULT",
       "owner": "repo-maintainer",
-      "command": ["@PYTEST@", "-m", "pytest", "tests/test_reclaim_summary.py", "-q"]
+      "command": ["@PYTEST@", "-m", "pytest", "tests/test_quarantine_restore.py", "-q"]
     },
     "op.vidsweep.frozen_contract": {
       "type": "COMMAND_RESULT",
       "owner": "repo-maintainer",
-      "description": "operator-written regression from the frozen F-EXP-2 record (outside writer scope)",
-      "command": ["@PYTEST@", "-m", "pytest", "L:/AI/Hermes/feature_runs/F-EXP-2/verification/test_reclaim_frozen_contract.py", "-q"]
+      "description": "operator-written contract from the frozen F-EXP-3 record (outside writer scope)",
+      "command": ["@PYTEST@", "-m", "pytest", "L:/AI/Hermes/feature_runs/F-EXP-3/verification/test_restore_frozen_contract.py", "-q"]
+    },
+    "op.vidsweep.restore_edge": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "description": "operator-written edge-case contract from the frozen F-EXP-3 record (outside writer scope)",
+      "command": ["@PYTEST@", "-m", "pytest", "L:/AI/Hermes/feature_runs/F-EXP-3/verification/test_restore_edge_contract.py", "-q"]
     },
     "op.vidsweep.f001_regression": {
       "type": "COMMAND_RESULT",
@@ -23,6 +29,11 @@
       "type": "COMMAND_RESULT",
       "owner": "repo-maintainer",
       "command": ["@PYTEST@", "-m", "pytest", "tests/test_export_groups.py", "-q"]
+    },
+    "op.vidsweep.reclaim_regression": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "command": ["@PYTEST@", "-m", "pytest", "tests/test_reclaim_summary.py", "-q"]
     },
     "op.vidsweep.import_smoke": {
       "type": "COMMAND_RESULT",
@@ -37,13 +48,18 @@
   },
   "checks": [
     {
-      "check_id": "test_reclaim_summary",
-      "operation_id": "op.vidsweep.reclaim_summary_test",
+      "check_id": "restore_tests",
+      "operation_id": "op.vidsweep.restore_tests",
       "expected_evidence": "COMMAND_RESULT"
     },
     {
       "check_id": "frozen_contract",
       "operation_id": "op.vidsweep.frozen_contract",
+      "expected_evidence": "COMMAND_RESULT"
+    },
+    {
+      "check_id": "restore_edge_contract",
+      "operation_id": "op.vidsweep.restore_edge",
       "expected_evidence": "COMMAND_RESULT"
     },
     {
@@ -54,6 +70,11 @@
     {
       "check_id": "export_regression",
       "operation_id": "op.vidsweep.export_regression",
+      "expected_evidence": "COMMAND_RESULT"
+    },
+    {
+      "check_id": "reclaim_regression",
+      "operation_id": "op.vidsweep.reclaim_regression",
       "expected_evidence": "COMMAND_RESULT"
     },
     {
