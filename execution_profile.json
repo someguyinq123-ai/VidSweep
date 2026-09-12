@@ -1,0 +1,65 @@
+{
+  "version": "F-EXP-2",
+  "owner": "operator (explicit setup; never model-authored)",
+  "note": "Accepted check registry for the reclaimable-summary feature. frozen_contract is the operator's test written from the frozen F-EXP-2 record; it lives in the feature run directory OUTSIDE the writer's scope, and the check runs with the candidate tree as CWD.",
+  "operations": {
+    "op.vidsweep.reclaim_summary_test": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "command": ["@PYTEST@", "-m", "pytest", "tests/test_reclaim_summary.py", "-q"]
+    },
+    "op.vidsweep.frozen_contract": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "description": "operator-written regression from the frozen F-EXP-2 record (outside writer scope)",
+      "command": ["@PYTEST@", "-m", "pytest", "L:/AI/Hermes/feature_runs/F-EXP-2/verification/test_reclaim_frozen_contract.py", "-q"]
+    },
+    "op.vidsweep.f001_regression": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "command": ["@PYTEST@", "-m", "pytest", "tests/test_f001_dismissal.py", "-q"]
+    },
+    "op.vidsweep.export_regression": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "command": ["@PYTEST@", "-m", "pytest", "tests/test_export_groups.py", "-q"]
+    },
+    "op.vidsweep.import_smoke": {
+      "type": "COMMAND_RESULT",
+      "owner": "repo-maintainer",
+      "command": ["@PYTEST@", "-c", "import core, gui; print('imports ok')"],
+      "assertion": {
+        "kind": "stdout_equals",
+        "expected": "imports ok",
+        "normalization": "strip_terminal_newline"
+      }
+    }
+  },
+  "checks": [
+    {
+      "check_id": "test_reclaim_summary",
+      "operation_id": "op.vidsweep.reclaim_summary_test",
+      "expected_evidence": "COMMAND_RESULT"
+    },
+    {
+      "check_id": "frozen_contract",
+      "operation_id": "op.vidsweep.frozen_contract",
+      "expected_evidence": "COMMAND_RESULT"
+    },
+    {
+      "check_id": "f001_regressions",
+      "operation_id": "op.vidsweep.f001_regression",
+      "expected_evidence": "COMMAND_RESULT"
+    },
+    {
+      "check_id": "export_regression",
+      "operation_id": "op.vidsweep.export_regression",
+      "expected_evidence": "COMMAND_RESULT"
+    },
+    {
+      "check_id": "import_smoke",
+      "operation_id": "op.vidsweep.import_smoke",
+      "expected_evidence": "COMMAND_RESULT"
+    }
+  ]
+}
