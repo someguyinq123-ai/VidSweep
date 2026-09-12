@@ -1437,6 +1437,177 @@ class VideoOrganizer:
                         self._export_cell(wasted),
                     ])
 
+    # ------------------------------------------------------ restore quarantine
+    # The action manifests under logs/ are the ONLY record of what the
+    # quarantine flow moved and where each file came from — the move deletes
+    # the file's database row. Restore is therefore driven by those rows,
+    # never by listing the quarantine folder (it may hold files from other
+    # tools) and never by the database.
+    @staticmethod
+    def _read_manifest(csv_path):
+        """Yield one dict per manifest row, keyed by lower-cased column name.
+
+        A CSV that does not carry every manifest column contributes nothing,
+        and a file that cannot be read or parsed is ignored instead of
+        fatal — an unrelated CSV sitting in logs/ must never break a restore.
+        """
+        required = {'action', 'path', 'destination', 'status'}
+        try:
+            fh = open(csv_path, 'r', newline='', encoding='utf-8',
+                      errors='replace')
+        except OSError:
+            return
+        with fh:
+            try:
+                reader = csv.DictReader(fh)
+                columns = {}
+                for name in (reader.fieldnames or ()):
+                    key = (name or '').strip().lstrip('\ufeff').lower()
+                    if key and key not in columns:
+                        columns[key] = name
+                if not required.issubset(columns):
+                    return  # not one of our manifests — ignore it entirely
+                for raw in reader:
+                    yield {key: raw.get(name)
+                           for key, name in columns.items()}
+            except (csv.Error, OSError, UnicodeError):
+                return
+
+    @staticmethod
+    def _transfer_back(source, original):
+        """Copy `source` back to `original` without ever overwriting, then
+        remove the quarantine copy.
+
+        Returns (dest, outcome): `dest` is the path the file was written to,
+        or None when nothing was transferred — in which case the quarantined
+        original is exactly where it was.
+        """
+        # 1) re-create the original tree (the manifest is what remembers it)
+        parent = os.path.dirname(original)
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError:
+                return None, 'skipped_transfer_failed'
+        # 2) pick the destination: the original name when free, else the
+        #    house numbered suffix (v.mp4 -> v_1.mp4 -> v_2.mp4 ...)
+        base, ext = os.path.splitext(original)
+        dest = original
+        suffix = 1
+        while os.path.exists(dest):
+            dest = f'{base}_{suffix}{ext}'
+            suffix += 1
+        # 3) copy first, creating the destination exclusively: the copy
+        #    itself can never clobber a file, and a name that appears between
+        #    the check above and the open simply moves on to the next suffix
+        flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                 | getattr(os, 'O_BINARY', 0))
+        handle = None
+        while handle is None:
+            try:
+                handle = os.open(dest, flags)
+            except FileExistsError:
+                dest = f'{base}_{suffix}{ext}'
+                suffix += 1
+            except OSError:
+                return None, 'skipped_transfer_failed'
+        try:
+            with os.fdopen(handle, 'wb') as out:
+                with open(source, 'rb') as src:
+                    shutil.copyfileobj(src, out, 1024 * 1024)
+                out.flush()
+        except OSError:
+            # the transfer failed: drop the file WE just created (and only
+            # that one) and leave the quarantined original fully intact
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            return None, 'skipped_transfer_failed'
+        # 4) the destination copy exists and is closed — only now may the
+        #    quarantine copy go
+        try:
+            os.remove(source)
+        except OSError:
+            pass  # the file IS restored; a failing unlink must not undo it
+        return dest, ('restored' if dest == original else 'restored_renamed')
+
+    def restore_quarantine(self, logs_dir):
+        """Put every quarantined file listed in the logs/ manifests back.
+
+        Manifest-authoritative: candidates are exactly the rows of
+        `actions_*.csv` (read by COLUMN NAME; files in filename order, rows
+        in file order) with `action == 'move'`, `status == 'moved'` and a
+        non-empty `path` and `destination`. The quarantine folder is never
+        scanned and the database is never consulted, so a bare
+        `VideoOrganizer.__new__(VideoOrganizer)` is enough to call this.
+
+        Each file is copied back to the original path recorded in the
+        manifest, re-creating missing parent directories, never overwriting
+        (an occupied name takes the house numbered suffix, `v.mp4` ->
+        `v_1.mp4`) and removing the quarantine copy only after the
+        destination copy exists. Repeated records of the same quarantined
+        file resolve LAST-wins (manifest filename ascending, then row order).
+
+        Returns {'restored': int, 'renamed': int, 'skipped': int,
+        'results': [{'source', 'original', 'dest', 'outcome'}]} with
+        `results` sorted by `source`; outcomes are exactly 'restored',
+        'restored_renamed', 'skipped_missing_source' and
+        'skipped_transfer_failed'. A missing `logs_dir` raises ValueError.
+        """
+        if not isinstance(logs_dir, (str, bytes, os.PathLike)) \
+                or not os.path.isdir(logs_dir):
+            raise ValueError(f'action-manifest folder not found: {logs_dir!r}')
+
+        # 1) index the manifests. Filenames sort chronologically (the app
+        #    stamps them) and rows are read in file order, so a later record
+        #    of the same quarantined file overrides an earlier one.
+        candidates = {}
+        try:
+            names = sorted(name for name in os.listdir(logs_dir)
+                           if name.lower().startswith('actions_')
+                           and name.lower().endswith('.csv'))
+        except OSError:
+            names = []
+        for name in names:
+            manifest = os.path.join(logs_dir, name)
+            if not os.path.isfile(manifest):
+                continue
+            for row in self._read_manifest(manifest):
+                if (row.get('action') or '').strip() != 'move':
+                    continue
+                if (row.get('status') or '').strip() != 'moved':
+                    continue
+                original = row.get('path')
+                source = row.get('destination')
+                if not isinstance(original, str) or not original.strip():
+                    continue
+                if not isinstance(source, str) or not source.strip():
+                    continue
+                candidates[source] = original  # LAST-wins per destination
+
+        # 2) put every listed file back, then report — one entry per
+        #    deduplicated candidate, sorted by source.
+        results = []
+        for source, original in candidates.items():
+            if not os.path.exists(source):
+                results.append({'source': source, 'original': original,
+                                'dest': None,
+                                'outcome': 'skipped_missing_source'})
+                continue
+            dest, outcome = self._transfer_back(source, original)
+            results.append({'source': source, 'original': original,
+                            'dest': dest, 'outcome': outcome})
+        results.sort(key=lambda r: r['source'])
+        restored = sum(1 for r in results if r['outcome'] == 'restored')
+        renamed = sum(1 for r in results
+                      if r['outcome'] == 'restored_renamed')
+        skipped = sum(1 for r in results
+                      if r['outcome'] in ('skipped_missing_source',
+                                          'skipped_transfer_failed'))
+        return {'restored': restored, 'renamed': renamed, 'skipped': skipped,
+                'results': results}
+
     def close(self):
         self.db.close()
 
